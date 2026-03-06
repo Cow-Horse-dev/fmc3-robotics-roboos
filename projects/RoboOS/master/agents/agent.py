@@ -2,10 +2,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 from collections import defaultdict
-from typing import Dict
+from typing import Any, Dict
 
 import yaml
 from agents.planner import GlobalTaskPlanner
@@ -156,6 +157,215 @@ class GlobalAgent:
             grouped[int(task.get("subtask_order", 0))].append(task)
         return dict(sorted(grouped.items()))
 
+    @staticmethod
+    def _normalize_task_text(task: str) -> str:
+        if not isinstance(task, str):
+            return ""
+        return " ".join(task.strip().lower().split())
+
+    def _is_pick_bottle_atomic_task(self, task: str) -> bool:
+        text = self._normalize_task_text(task)
+        if not text:
+            return False
+
+        fixed_aliases = {
+            "pick bottle and place into box",
+            "pick bottle and place it into box",
+            "pick bottle and place in box",
+            "pick_bottle_and_place_into_box",
+            "抓瓶子放进箱子",
+            "抓瓶子放到箱子",
+        }
+        if text in fixed_aliases:
+            return True
+
+        return (
+            ("pick" in text or "grab" in text)
+            and "bottle" in text
+            and ("place" in text or "put" in text)
+            and "box" in text
+        )
+
+    def _is_atomic_manipulation_task(self, task: str) -> bool:
+        """Conservative heuristic for single-object pick-and-place intents."""
+        text = self._normalize_task_text(task)
+        if not text:
+            return False
+
+        if "execute_manipulation_task" in text:
+            return True
+
+        semantic_text = text.replace("_", " ")
+
+        # Avoid over-triggering for non-manipulation requests that include generic words like "take" or "move".
+        non_manipulation_keywords = (
+            "photo",
+            "image",
+            "video",
+            "report",
+            "status",
+            "health",
+            "diagnose",
+            "diagnostic",
+            "inspect",
+            "startup",
+            "shutdown",
+            "service",
+            "log",
+            "连接测试",
+            "状态",
+            "健康检查",
+            "诊断",
+            "巡检",
+            "日志",
+            "启动",
+            "停止服务",
+        )
+        if any(keyword in semantic_text for keyword in non_manipulation_keywords):
+            return False
+
+        en_pick_pattern = r"\b(pick|grab|grasp|take|lift)\b"
+        en_place_pattern = r"\b(place|put|set|drop)\b"
+        has_en_pick_and_place = bool(
+            re.search(en_pick_pattern, semantic_text)
+            and re.search(en_place_pattern, semantic_text)
+        )
+        has_en_destination = any(
+            marker in f" {semantic_text} "
+            for marker in (" into ", " onto ", " in ", " on ", " to ")
+        )
+
+        cn_pick_verbs = ("抓", "拿", "取", "提")
+        cn_place_verbs = ("放", "摆", "置")
+        cn_destination_markers = ("放到", "放进", "放在", "放入", "放至", "到", "至")
+        has_cn_pick_and_place = any(v in text for v in cn_pick_verbs) and any(
+            v in text for v in cn_place_verbs
+        )
+        has_cn_destination = any(marker in text for marker in cn_destination_markers)
+
+        return (has_en_pick_and_place and has_en_destination) or (
+            has_cn_pick_and_place and has_cn_destination
+        )
+
+    @staticmethod
+    def _extract_tool_names(robot_info: Any) -> set[str]:
+        if isinstance(robot_info, str):
+            try:
+                robot_info = json.loads(robot_info)
+            except Exception:
+                return set()
+        if not isinstance(robot_info, dict):
+            return set()
+
+        out: set[str] = set()
+        for tool in robot_info.get("robot_tool", []) or []:
+            if isinstance(tool, dict):
+                func = tool.get("function", {})
+                if isinstance(func, dict):
+                    name = func.get("name")
+                    if isinstance(name, str) and name.strip():
+                        out.add(name.strip())
+                name = tool.get("name")
+                if isinstance(name, str) and name.strip():
+                    out.add(name.strip())
+        return out
+
+    def _select_robot_for_tool(self, tool_name: str) -> str | None:
+        all_agents_info = self.collaborator.read_all_agents_info() or {}
+        candidates = []
+        for robot_name, raw_info in all_agents_info.items():
+            tools = self._extract_tool_names(raw_info)
+            if tool_name in tools:
+                candidates.append(robot_name)
+
+        if not candidates:
+            return None
+
+        # Prioritize the GR2 robot naming convention, then lexicographic fallback.
+        for preferred in ("fourier_gr2", "gr2"):
+            if preferred in candidates:
+                return preferred
+        return sorted(candidates)[0]
+
+    def _select_default_robot(self) -> str | None:
+        robots = self.collaborator.read_all_agents_name() or []
+        if not robots:
+            return None
+        for preferred in ("fourier_gr2", "gr2"):
+            if preferred in robots:
+                return preferred
+        return sorted(robots)[0]
+
+    def _build_direct_subtask_plan(self, task: str) -> Dict | None:
+        task_text = task.strip() if isinstance(task, str) else ""
+        if not task_text:
+            return None
+
+        # Preferred atomic tool for end-to-end manipulation.
+        execute_tool = "execute_manipulation_task"
+        execute_robot = self._select_robot_for_tool(execute_tool)
+        if execute_robot and self._is_atomic_manipulation_task(task_text):
+            plan = {
+                "reasoning_explanation": (
+                    "Task matched atomic manipulation routing. "
+                    "Dispatch a single end-to-end subtask to execute_manipulation_task."
+                ),
+                "subtask_list": [
+                    {
+                        "robot_name": execute_robot,
+                        "subtask": f"{execute_tool}: {task_text}",
+                        "subtask_order": 1,
+                    }
+                ],
+            }
+            self.logger.info("[ROUTER] Using atomic execute routing for task '%s': %s", task, plan)
+            return plan
+
+        # Fallback: still keep the task atomic (single subtask), avoid planner decomposition/empty plans.
+        if self._is_atomic_manipulation_task(task_text):
+            fallback_robot = self._select_default_robot()
+            if fallback_robot:
+                plan = {
+                    "reasoning_explanation": (
+                        "Task matched atomic manipulation intent. "
+                        "execute_manipulation_task is not registered, so dispatch one direct subtask to a robot."
+                    ),
+                    "subtask_list": [
+                        {
+                            "robot_name": fallback_robot,
+                            "subtask": task_text,
+                            "subtask_order": 1,
+                        }
+                    ],
+                }
+                self.logger.info(
+                    "[ROUTER] Using atomic direct fallback for task '%s': %s", task, plan
+                )
+                return plan
+
+        # Backward-compatible fallback for older single-purpose pick tool.
+        if self._is_pick_bottle_atomic_task(task_text):
+            tool_name = "pick_bottle_and_place_into_box"
+            robot_name = self._select_robot_for_tool(tool_name)
+            if robot_name:
+                plan = {
+                    "reasoning_explanation": (
+                        "Task matched atomic GR2 pick-bottle skill. "
+                        "Use only one executable subtask to avoid unsupported decomposition."
+                    ),
+                    "subtask_list": [
+                        {
+                            "robot_name": robot_name,
+                            "subtask": tool_name,
+                            "subtask_order": 1,
+                        }
+                    ],
+                }
+                self.logger.info("[ROUTER] Using atomic fallback routing for task '%s': %s", task, plan)
+                return plan
+
+        return None
+
     def _start_listener(self):
         """Start listen in a background thread."""
         threading.Thread(
@@ -211,26 +421,28 @@ class GlobalAgent:
         """Publish a global task to all Agents"""
         self.logger.info(f"Publishing global task: {task}")
 
-        response = self.planner.forward(task)
-        reasoning_and_subtasks = self._extract_json(response)
-
-        # Retry if JSON extraction fails
-        attempt = 0
-        while (not self.reasoning_and_subtasks_is_right(reasoning_and_subtasks)) and (
-            attempt < self.config["model"]["model_retry_planning"]
-        ):
-            self.logger.warning(
-                f"[WARNING] JSON extraction failed after {self.config['model']['model_retry_planning']} attempts."
-            )
-            self.logger.error(
-                f"[ERROR] Task ({task}) failed to be decomposed into subtasks, it will be ignored."
-            )
-            self.logger.warning(
-                f"Attempt {attempt + 1} to extract JSON failed. Retrying..."
-            )
+        reasoning_and_subtasks = self._build_direct_subtask_plan(task)
+        if reasoning_and_subtasks is None:
             response = self.planner.forward(task)
             reasoning_and_subtasks = self._extract_json(response)
-            attempt += 1
+
+            # Retry if JSON extraction fails
+            attempt = 0
+            while (not self.reasoning_and_subtasks_is_right(reasoning_and_subtasks)) and (
+                attempt < self.config["model"]["model_retry_planning"]
+            ):
+                self.logger.warning(
+                    f"[WARNING] JSON extraction failed after {self.config['model']['model_retry_planning']} attempts."
+                )
+                self.logger.error(
+                    f"[ERROR] Task ({task}) failed to be decomposed into subtasks, it will be ignored."
+                )
+                self.logger.warning(
+                    f"Attempt {attempt + 1} to extract JSON failed. Retrying..."
+                )
+                response = self.planner.forward(task)
+                reasoning_and_subtasks = self._extract_json(response)
+                attempt += 1
 
         self.logger.info(f"Received reasoning and subtasks:\n{reasoning_and_subtasks}")
 
