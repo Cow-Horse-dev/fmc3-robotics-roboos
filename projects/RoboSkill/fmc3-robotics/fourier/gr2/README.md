@@ -1,66 +1,78 @@
-# Fourier GR2 Robot Skill Server
+# Fourier GR2 Skill Server
 
-This skill server provides MCP-based control for the Fourier GR2 humanoid robot.
+This skill server provides MCP tools for Fourier GR2 and PI0 pick-task integration.
 
 ## Prerequisites
 
 - Python 3.10+
-- Fourier GR2 robot connected to the network
-- DDS domain ID: 123 (configurable in skill.py)
+- `fourier-aurora-client` can connect to GR2
+- Conda env for skill server (example: `fourier-robot`)
+- Conda env for PI0 service: `lerobot-pi0`
 
-## Installation
+## Install
 
 ```bash
-# Create conda environment
 conda create -n fourier-robot python=3.10 -y
 conda activate fourier-robot
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-## Configuration
-
-Edit `skill.py` to configure:
-- `DOMAIN_ID`: DDS domain ID (default: 123)
-- `ROBOT_NAME`: Robot name (default: "gr2")
-
-## Running the Service
+## Run Skill Server
 
 ```bash
 python skill.py
 ```
 
-This starts the MCP skill server at `http://0.0.0.0:8000`.
+Skill server listens on `http://0.0.0.0:8000`.
 
-## Available Tools
+## Existing Robot Tools
 
-| Tool | Description |
-|------|-------------|
-| `connect_robot()` | Connect to robot and enter control mode |
-| `disconnect_robot()` | Disconnect and return to stand mode |
-| `wave_hand(wave_count, wave_speed)` | Make robot wave its hand |
-| `thumbs_up()` | Make robot give thumbs up gesture |
-| `move_arm_to_position(positions)` | Move arm to 7-DOF joint positions |
-| `set_hand_gesture(positions)` | Set 6-DOF hand finger positions |
+- `connect_robot()`
+- `disconnect_robot()`
+- `wave_hand(wave_count, wave_speed)`
+- `thumbs_up()`
+- `handshake()`
+- `nod_head()`
+- `shake_head()`
+- `bow()`
 
-## RoboOS Integration
+## New PI0 Pick Tools (for RoboOS)
 
-To use with RoboOS, set in `RoboOS/slaver/config.yaml`:
+- `start_pi0_pick_service(socket_path, checkpoint_path, robot_name, domain_id)`
+- `run_pi0_pick(task, max_steps, fps, fsm_state)`
+- `pick_bottle_and_place_into_box()`
+- `pi0_pick_status()`
+- `stop_pi0_pick()`
+- `stop_pi0_pick_service()`
+
+Default task:
+
+```text
+pick bottle and place into box
+```
+
+Default local IPC socket:
+
+```text
+/tmp/gr2_pi0_inference_service.sock
+```
+
+`run_pi0_pick(...)` 会在服务不可用时自动按默认配置拉起服务。
+
+## Recommended Call Sequence
+
+1. Start skill server (`python skill.py`).
+2. RoboOS calls `start_pi0_pick_service(...)`.
+3. RoboOS calls `run_pi0_pick(task="pick bottle and place into box")`.
+4. Poll with `pi0_pick_status()`.
+5. Stop current run with `stop_pi0_pick()` if needed.
+6. Stop service process with `stop_pi0_pick_service()` when done.
+
+## RoboOS Config Example
 
 ```yaml
 robot:
   name: fourier_gr2
   call_type: remote
   path: "http://<ROBOT_IP>:8000"
-```
-
-## Example Usage
-
-```python
-# Via MCP client
-await connect_robot()
-await wave_hand(wave_count=3, wave_speed=0.3)
-await thumbs_up()
-await disconnect_robot()
 ```

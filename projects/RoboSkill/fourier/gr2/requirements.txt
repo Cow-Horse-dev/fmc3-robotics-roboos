@@ -1,2 +1,0 @@
-mcp==1.9.4
-fourier-aurora-client==0.1.1

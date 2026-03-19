@@ -301,68 +301,71 @@ class GlobalAgent:
         if not task_text:
             return None
 
-        # Preferred atomic tool for end-to-end manipulation.
-        execute_tool = "execute_manipulation_task"
-        execute_robot = self._select_robot_for_tool(execute_tool)
-        if execute_robot and self._is_atomic_manipulation_task(task_text):
-            plan = {
-                "reasoning_explanation": (
-                    "Task matched atomic manipulation routing. "
-                    "Dispatch a single end-to-end subtask to execute_manipulation_task."
-                ),
-                "subtask_list": [
-                    {
-                        "robot_name": execute_robot,
-                        "subtask": f"{execute_tool}: {task_text}",
-                        "subtask_order": 1,
-                    }
-                ],
-            }
-            self.logger.info("[ROUTER] Using atomic execute routing for task '%s': %s", task, plan)
-            return plan
+        # DISABLED: Atomic manipulation routing - force VLM decomposition for bottle task
+        # # Preferred atomic tool for end-to-end manipulation.
+        # execute_tool = "execute_manipulation_task"
+        # execute_robot = self._select_robot_for_tool(execute_tool)
+        # if execute_robot and self._is_atomic_manipulation_task(task_text):
+        #     plan = {
+        #         "reasoning_explanation": (
+        #             "Task matched atomic manipulation routing. "
+        #             "Dispatch a single end-to-end subtask to execute_manipulation_task."
+        #         ),
+        #         "subtask_list": [
+        #             {
+        #                 "robot_name": execute_robot,
+        #                 "subtask": f"{execute_tool}: {task_text}",
+        #                 "subtask_order": 1,
+        #             }
+        #         ],
+        #     }
+        #     self.logger.info("[ROUTER] Using atomic execute routing for task '%s': %s", task, plan)
+        #     return plan
 
-        # Fallback: still keep the task atomic (single subtask), avoid planner decomposition/empty plans.
-        if self._is_atomic_manipulation_task(task_text):
-            fallback_robot = self._select_default_robot()
-            if fallback_robot:
-                plan = {
-                    "reasoning_explanation": (
-                        "Task matched atomic manipulation intent. "
-                        "execute_manipulation_task is not registered, so dispatch one direct subtask to a robot."
-                    ),
-                    "subtask_list": [
-                        {
-                            "robot_name": fallback_robot,
-                            "subtask": task_text,
-                            "subtask_order": 1,
-                        }
-                    ],
-                }
-                self.logger.info(
-                    "[ROUTER] Using atomic direct fallback for task '%s': %s", task, plan
-                )
-                return plan
+        # DISABLED: Fallback atomic routing - force VLM decomposition for bottle task
+        # # Fallback: still keep the task atomic (single subtask), avoid planner decomposition/empty plans.
+        # if self._is_atomic_manipulation_task(task_text):
+        #     fallback_robot = self._select_default_robot()
+        #     if fallback_robot:
+        #         plan = {
+        #             "reasoning_explanation": (
+        #                 "Task matched atomic manipulation intent. "
+        #                 "execute_manipulation_task is not registered, so dispatch one direct subtask to a robot."
+        #             ),
+        #             "subtask_list": [
+        #                 {
+        #                     "robot_name": fallback_robot,
+        #                     "subtask": task_text,
+        #                     "subtask_order": 1,
+        #                 }
+        #             ],
+        #         }
+        #         self.logger.info(
+        #             "[ROUTER] Using atomic direct fallback for task '%s': %s", task, plan
+        #         )
+        #         return plan
 
-        # Backward-compatible fallback for older single-purpose pick tool.
-        if self._is_pick_bottle_atomic_task(task_text):
-            tool_name = "pick_bottle_and_place_into_box"
-            robot_name = self._select_robot_for_tool(tool_name)
-            if robot_name:
-                plan = {
-                    "reasoning_explanation": (
-                        "Task matched atomic GR2 pick-bottle skill. "
-                        "Use only one executable subtask to avoid unsupported decomposition."
-                    ),
-                    "subtask_list": [
-                        {
-                            "robot_name": robot_name,
-                            "subtask": tool_name,
-                            "subtask_order": 1,
-                        }
-                    ],
-                }
-                self.logger.info("[ROUTER] Using atomic fallback routing for task '%s': %s", task, plan)
-                return plan
+        # DISABLED: Backward-compatible fallback for older single-purpose pick tool
+        # # Backward-compatible fallback for older single-purpose pick tool.
+        # if self._is_pick_bottle_atomic_task(task_text):
+        #     tool_name = "pick_bottle_and_place_into_box"
+        #     robot_name = self._select_robot_for_tool(tool_name)
+        #     if robot_name:
+        #         plan = {
+        #             "reasoning_explanation": (
+        #                 "Task matched atomic GR2 pick-bottle skill. "
+        #                 "Use only one executable subtask to avoid unsupported decomposition."
+        #             ),
+        #             "subtask_list": [
+        #                 {
+        #                     "robot_name": robot_name,
+        #                     "subtask": tool_name,
+        #                     "subtask_order": 1,
+        #                 }
+        #             ],
+        #         }
+        #         self.logger.info("[ROUTER] Using atomic fallback routing for task '%s': %s", task, plan)
+        #         return plan
 
         return None
 

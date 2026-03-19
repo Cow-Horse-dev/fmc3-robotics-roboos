@@ -5,79 +5,61 @@ from mcp.server.fastmcp import FastMCP
 # FastMCP server
 mcp = FastMCP("fourier_gr2", stateless_http=True, host="0.0.0.0", port=8000)
 
+
+# ============ Bottle Task Skills (PI0 VLA Simulation) ============
+
 @mcp.tool()
-async def connect_robot() -> str:
-    """Connect to Fourier GR2 robot and prepare for control.
-    Must be called before any other robot commands.
+async def take_bottle_out_of_box() -> str:
+    """Take a bottle out of the large box and hold it (or place at default position).
+    从大盒子里拿出一个瓶子并抓握（或放到默认位置）。拿出来。取出来。拿出瓶子。
+    Uses PI0 VLA model for vision-guided manipulation (MOCK simulation).
+    This is an atomic operation - only takes the bottle out, does not place at specific position.
     """
-    print("[MOCK] Connecting to robot...")
-    await asyncio.sleep(1.0)
-    print("[MOCK] Robot connected successfully.")
-    return "Fourier GR2 robot connected and ready."
+    print("[MOCK PI0] Starting take_bottle_out_of_box task...")
 
-
-@mcp.tool()
-async def disconnect_robot() -> str:
-    """Disconnect from Fourier GR2 robot and return to stand mode."""
-    print("[MOCK] Disconnecting robot...")
-    await asyncio.sleep(1.0)
-    print("[MOCK] Robot disconnected.")
-    return "Fourier GR2 robot disconnected."
-
-
-@mcp.tool()
-async def wave_hand(wave_count: int = 5, wave_speed: float = 0.3) -> str:
-    """Make the robot wave its right hand.
-        控制机器人执行[挥手]动作。
-    Args:
-        wave_count: Number of wave cycles (default: 5)
-        wave_speed: Time for one wave cycle in seconds, smaller is faster (default: 0.3)
-    """
-    print(f"[MOCK] Waving hand: count={wave_count}, speed={wave_speed}")
-    total_time = wave_count * wave_speed
-    # Simulate execution time
-    await asyncio.sleep(total_time)
-    print("[MOCK] Wave finished.")
-    return f"Wave completed with {wave_count} cycles."
-
-
-@mcp.tool()
-async def thumbs_up() -> str:
-    """Make the robot give a thumbs up gesture with its right hand."""
-    print("[MOCK] Doing thumbs up gesture...")
-    await asyncio.sleep(2.0)
-    print("[MOCK] Thumbs up finished.")
-    return "Thumbs up gesture completed."
-
-
-@mcp.tool()
-async def move_arm_to_position(positions: list) -> str:
-    """Move robot right arm to specified joint positions.
-
-    Args:
-        positions: List of 7 joint positions for right_manipulator
-    """
-    if len(positions) != 7:
-        return "Error: positions must be a list of 7 values"
-
-    print(f"[MOCK] Moving arm to positions: {positions}")
-    await asyncio.sleep(1.0)
-    return f"Arm moved to position: {positions}"
-
-
-@mcp.tool()
-async def set_hand_gesture(positions: list) -> str:
-    """Set robot right hand finger positions.
-
-    Args:
-        positions: List of 6 finger joint positions [index, middle, ring, pinky, thumb_rotation, thumb_flex]
-    """
-    if len(positions) != 6:
-        return "Error: positions must be a list of 6 values"
-
-    print(f"[MOCK] Setting hand gesture: {positions}")
+    # 模拟 PI0 VLA 模型推理过程
     await asyncio.sleep(0.5)
-    return f"Hand gesture set to: {positions}"
+    print("[MOCK PI0] Vision processing: Detecting bottles in box...")
+
+    await asyncio.sleep(1.0)
+    print("[MOCK PI0] Planning grasp trajectory...")
+
+    await asyncio.sleep(2.0)
+    print("[MOCK PI0] Executing: Reaching into box → Grasping bottle → Lifting out")
+
+    await asyncio.sleep(1.0)
+    print("[MOCK PI0] Bottle taken out and held by robot.")
+
+    print("[MOCK PI0] Task completed successfully.")
+
+    return "Successfully took bottle out of box. Bottle is now held by robot."
+
+
+@mcp.tool()
+async def put_bottle_into_box() -> str:
+    """Put the bottle (currently held by robot) into the large box.
+    把瓶子（当前由机器人抓握）放入大盒子。放进去。放进盒子。放回盒子。
+    Uses PI0 VLA model for vision-guided manipulation (MOCK simulation).
+    This is an atomic operation - assumes bottle is already held by robot.
+    """
+    print("[MOCK PI0] Starting put_bottle_into_box task...")
+
+    # 模拟 PI0 VLA 模型推理过程
+    await asyncio.sleep(0.5)
+    print("[MOCK PI0] Vision processing: Locating box opening...")
+
+    await asyncio.sleep(1.0)
+    print("[MOCK PI0] Planning placement trajectory...")
+
+    await asyncio.sleep(2.0)
+    print("[MOCK PI0] Executing: Moving to box → Placing bottle inside → Releasing")
+
+    await asyncio.sleep(1.0)
+    print("[MOCK PI0] Bottle placed into box.")
+
+    print("[MOCK PI0] Task completed successfully.")
+
+    return "Successfully put bottle into box."
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ pip install conda-pack
 ### fourier-robot 环境
 ```bash
 conda pack -p /home/phl/miniconda3/envs/fourier-robot -o fourier-robot.tar.gz
+conda pack -p /home/phl/miniconda3/envs/lerobot-pi0 -o lerobot-pi0.tar.gz
 ```
 
 ### robobrain 环境

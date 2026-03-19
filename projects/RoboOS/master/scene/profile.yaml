@@ -13,6 +13,7 @@ scene:
       - basket
       - plate
       - cup
+      - largeBox
 
   - name: servingTable
     type: table
@@ -25,3 +26,10 @@ scene:
     type: container
     contains:
       - egg
+
+  - name: largeBox
+    type: container
+    contains:
+      - bottle1
+      - bottle2
+      - bottle3
