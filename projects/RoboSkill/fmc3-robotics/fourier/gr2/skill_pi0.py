@@ -329,6 +329,26 @@ async def execute_manipulation_task(task: str = DEFAULT_PI0_TASK) -> dict:
 
 
 @mcp.tool()
+async def take_bottle_out_of_box() -> dict:
+    """Take a bottle out of the large box and hold it.
+
+    中文别名：
+    从盒子里拿出瓶子、把瓶子拿出来、取出瓶子、把瓶子拿出来拿给我。
+    """
+    return await execute_manipulation_task("take bottle out of the box")
+
+
+@mcp.tool()
+async def put_bottle_into_box() -> dict:
+    """Put the bottle currently held by the robot back into the large box.
+
+    中文别名：
+    把瓶子放进盒子、把瓶子放回盒子、放进去、放入大盒子。
+    """
+    return await execute_manipulation_task("put bottle into the box")
+
+
+@mcp.tool()
 async def get_task_status() -> dict:
     """查询当前任务状态
 

@@ -12,6 +12,34 @@ import numpy as np
 from typing import List, Tuple, Dict, Any, Optional
 
 
+TOOL_ALIASES = {
+    "take_bottle_out_of_box": (
+        "take bottle out of the box",
+        "take bottle out",
+        "pick bottle out of box",
+        "remove bottle from box",
+        "从盒子里拿出瓶子",
+        "把瓶子拿出来",
+        "拿出瓶子",
+        "取出瓶子",
+        "把瓶子拿出来",
+        "把瓶子拿进来",
+        "把瓶子拿过来",
+    ),
+    "put_bottle_into_box": (
+        "put bottle into the box",
+        "put bottle in box",
+        "place bottle into box",
+        "put the bottle back",
+        "把瓶子放进盒子",
+        "把瓶子放回盒子",
+        "放进盒子",
+        "放入盒子",
+        "把瓶子放进去",
+    ),
+}
+
+
 class ToolMatcher:
     """
     Intelligent tool matcher using semantic embeddings for better task-tool matching.
@@ -252,6 +280,9 @@ class ToolMatcher:
             score = 0.0
             if name in task_lower:
                 score += 0.5
+            aliases = TOOL_ALIASES.get(name, ())
+            if any(alias.lower() in task_lower for alias in aliases):
+                score += 0.9
             if description and any(word in task_lower for word in description.split()):
                 score += 0.3
             

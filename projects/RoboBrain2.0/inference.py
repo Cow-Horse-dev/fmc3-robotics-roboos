@@ -351,7 +351,7 @@ if __name__ == "__main__":
     parser.add_argument("--serve", action="store_true", help="Start OpenAI-compatible server")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=4567)
-    parser.add_argument("--model-id", default="/home/phl/workspace/models/RoboBrain2.0-7B")
+    parser.add_argument("--model-id", default="/home/phl/workspace/models/RoboBrain2.0-3B")
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--enable-thinking", action="store_true")
     parser.add_argument("--load-in-4bit", action="store_true", help="Load model in 4-bit quantization to save memory")
