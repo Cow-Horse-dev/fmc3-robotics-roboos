@@ -10,7 +10,10 @@ requests to the dual PI0 RGB wrist inference server over a Unix socket.
 import asyncio
 import json
 import os
+import shlex
 import socket
+import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +21,12 @@ from mcp.server.fastmcp import FastMCP
 
 
 DEFAULT_UNIX_SOCKET_PATH = "/tmp/gr2_dual_pi0_rgb_wrist.sock"
+DEFAULT_DUAL_PI0_CONDA_ENV = os.getenv("FOURIER_GR2_DUAL_PI0_CONDA_ENV", "lerobot-pi0")
+DEFAULT_DUAL_PI0_SERVICE_SCRIPT_CANDIDATES = (
+    os.getenv("FOURIER_GR2_DUAL_PI0_SERVICE_SCRIPT", "").strip(),
+    "/home/phl/workspace/lerobot-versions/fmc3-lerobot/scripts/inference/gr2_dual_pi0_rgb_wrist_inference_server.py",
+    "/home/phl/workspace/lerobot-versions/FMC3-Lerobot-Change/scripts/inference/gr2_dual_pi0_rgb_wrist_inference_server.py",
+)
 
 
 def _resolve_server_host_port() -> tuple[str, int]:
@@ -37,6 +46,29 @@ def _resolve_server_host_port() -> tuple[str, int]:
 
 SERVER_HOST, SERVER_PORT = _resolve_server_host_port()
 DEFAULT_TIMEOUT_S = float(os.getenv("FOURIER_GR2_SOCKET_TIMEOUT_S", "30.0"))
+
+
+def _resolve_dual_pi0_script() -> str:
+    for candidate in DEFAULT_DUAL_PI0_SERVICE_SCRIPT_CANDIDATES:
+        if not candidate:
+            continue
+        resolved = Path(candidate).expanduser()
+        if resolved.exists():
+            return str(resolved)
+
+    fallback = next(
+        (candidate for candidate in DEFAULT_DUAL_PI0_SERVICE_SCRIPT_CANDIDATES if candidate),
+        "",
+    )
+    return str(Path(fallback).expanduser()) if fallback else ""
+
+
+DUAL_PI0_SERVICE_SCRIPT = _resolve_dual_pi0_script()
+DUAL_PI0_SERVICE_WORKDIR = (
+    str(Path(DUAL_PI0_SERVICE_SCRIPT).resolve().parents[2])
+    if DUAL_PI0_SERVICE_SCRIPT and Path(DUAL_PI0_SERVICE_SCRIPT).expanduser().exists()
+    else None
+)
 DUAL_PI0_UNIX_SOCKET_PATH = str(
     Path(
         os.getenv(
@@ -45,6 +77,9 @@ DUAL_PI0_UNIX_SOCKET_PATH = str(
         )
     ).expanduser()
 )
+DUAL_PI0_EXTRA_ARGS = shlex.split(os.getenv("FOURIER_GR2_DUAL_PI0_EXTRA_ARGS", ""))
+_service_proc: subprocess.Popen | None = None
+_service_lock = asyncio.Lock()
 
 # FastMCP server
 mcp = FastMCP("fourier_gr2", stateless_http=True, host=SERVER_HOST, port=SERVER_PORT)
@@ -92,6 +127,183 @@ def _unix_socket_request(
     return data
 
 
+def _is_proc_running(proc: subprocess.Popen | None) -> bool:
+    return proc is not None and proc.poll() is None
+
+
+def _wait_service_health(
+    socket_path: str,
+    *,
+    timeout_s: float = 90.0,
+    poll_interval_s: float = 1.0,
+) -> dict[str, Any]:
+    deadline = time.time() + max(1.0, timeout_s)
+    last: dict[str, Any] = {"ok": False, "message": "dual PI0 service not ready"}
+
+    while time.time() < deadline:
+        try:
+            health = _unix_socket_request(
+                "health",
+                payload=None,
+                socket_path=socket_path,
+                timeout_s=min(DEFAULT_TIMEOUT_S, 5.0),
+            )
+            if bool(health.get("ok")):
+                return health
+            last = health
+        except Exception as exc:
+            last = {
+                "ok": False,
+                "message": f"health probe failed: {exc}",
+                "socket_path": str(Path(socket_path).expanduser()),
+            }
+        time.sleep(max(0.1, poll_interval_s))
+
+    raise RuntimeError(f"dual PI0 service health check timeout: {last}")
+
+
+def _start_dual_pi0_service(
+    socket_path: str = DUAL_PI0_UNIX_SOCKET_PATH,
+) -> tuple[subprocess.Popen, list[str]]:
+    script_path = Path(DUAL_PI0_SERVICE_SCRIPT).expanduser()
+    if not script_path.exists():
+        raise FileNotFoundError(f"dual PI0 service script not found: {script_path}")
+
+    cmd = [
+        "conda",
+        "run",
+        "--no-capture-output",
+        "-n",
+        DEFAULT_DUAL_PI0_CONDA_ENV,
+        "python",
+        str(script_path),
+        "--unix-socket-path",
+        str(Path(socket_path).expanduser()),
+        "--no-gui",
+    ]
+    if DUAL_PI0_EXTRA_ARGS:
+        cmd.extend(DUAL_PI0_EXTRA_ARGS)
+
+    env = os.environ.copy()
+    env.setdefault("HF_HUB_OFFLINE", "1")
+    env.setdefault("TRANSFORMERS_OFFLINE", "1")
+    env.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=DUAL_PI0_SERVICE_WORKDIR or None,
+        env=env,
+    )
+    return proc, cmd
+
+
+def _terminate_proc(proc: subprocess.Popen | None, timeout_s: float = 8.0) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=max(0.1, timeout_s))
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=3.0)
+
+
+async def _ensure_dual_pi0_service_ready() -> dict[str, Any]:
+    global _service_proc
+
+    try:
+        health = await asyncio.to_thread(
+            _unix_socket_request,
+            "health",
+            None,
+            socket_path=DUAL_PI0_UNIX_SOCKET_PATH,
+            timeout_s=min(DEFAULT_TIMEOUT_S, 5.0),
+        )
+        if bool(health.get("ok")):
+            return {
+                "ok": True,
+                "message": "dual PI0 service is ready",
+                "socket_path": DUAL_PI0_UNIX_SOCKET_PATH,
+                "health": health,
+                "started_by_skill": False,
+            }
+    except Exception:
+        pass
+
+    async with _service_lock:
+        try:
+            health = await asyncio.to_thread(
+                _unix_socket_request,
+                "health",
+                None,
+                socket_path=DUAL_PI0_UNIX_SOCKET_PATH,
+                timeout_s=min(DEFAULT_TIMEOUT_S, 5.0),
+            )
+            if bool(health.get("ok")):
+                return {
+                    "ok": True,
+                    "message": "dual PI0 service is ready",
+                    "socket_path": DUAL_PI0_UNIX_SOCKET_PATH,
+                    "health": health,
+                    "started_by_skill": False,
+                }
+        except Exception:
+            health = None
+
+        if _service_proc is not None and _service_proc.poll() is not None:
+            _service_proc = None
+
+        if _is_proc_running(_service_proc):
+            return {
+                "ok": False,
+                "message": "dual PI0 process exists but service is still unavailable",
+                "socket_path": DUAL_PI0_UNIX_SOCKET_PATH,
+                "health": health,
+                "started_by_skill": False,
+            }
+
+        try:
+            proc, cmd = await asyncio.to_thread(_start_dual_pi0_service, DUAL_PI0_UNIX_SOCKET_PATH)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "message": f"failed to start dual PI0 service: {exc}",
+                "socket_path": DUAL_PI0_UNIX_SOCKET_PATH,
+                "service_script": DUAL_PI0_SERVICE_SCRIPT,
+            }
+
+        _service_proc = proc
+
+    try:
+        health = await asyncio.to_thread(
+            _wait_service_health,
+            DUAL_PI0_UNIX_SOCKET_PATH,
+            timeout_s=90.0,
+            poll_interval_s=1.0,
+        )
+        return {
+            "ok": True,
+            "message": "dual PI0 service started successfully",
+            "socket_path": DUAL_PI0_UNIX_SOCKET_PATH,
+            "service_script": DUAL_PI0_SERVICE_SCRIPT,
+            "pid": proc.pid,
+            "command": cmd,
+            "health": health,
+            "started_by_skill": True,
+        }
+    except Exception as exc:
+        await asyncio.to_thread(_terminate_proc, proc, 3.0)
+        async with _service_lock:
+            if _service_proc is proc:
+                _service_proc = None
+        return {
+            "ok": False,
+            "message": f"dual PI0 service started but never became healthy: {exc}",
+            "socket_path": DUAL_PI0_UNIX_SOCKET_PATH,
+            "service_script": DUAL_PI0_SERVICE_SCRIPT,
+        }
+
+
 def _build_start_payload(
     *,
     max_steps: int | None = None,
@@ -110,6 +322,42 @@ def _build_start_payload(
     if stop_timeout_s is not None:
         payload["stop_timeout_s"] = float(stop_timeout_s)
     return payload
+
+
+async def _forward_to_dual_pi0(
+    method: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    ensure_service: bool = False,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> dict[str, Any]:
+    boot = None
+    if ensure_service:
+        boot = await _ensure_dual_pi0_service_ready()
+        if not bool(boot.get("ok")):
+            return {
+                **_error_response(method, str(boot.get("message", "service unavailable"))),
+                "boot": boot,
+            }
+
+    try:
+        response = await asyncio.to_thread(
+            _unix_socket_request,
+            method,
+            payload,
+            socket_path=DUAL_PI0_UNIX_SOCKET_PATH,
+            timeout_s=timeout_s,
+        )
+    except Exception as exc:
+        return {
+            **_error_response(method, f"socket request failed: {exc}"),
+            **({"boot": boot} if boot is not None else {}),
+        }
+
+    response.setdefault("method", method)
+    if boot is not None:
+        response.setdefault("boot", boot)
+    return response
 
 
 def _error_response(
@@ -166,7 +414,12 @@ async def take_bottle_out_of_box(
         stop_timeout_s=None if stop_timeout_s < 0 else stop_timeout_s,
         restart=restart,
     )
-    response = await _request_safe("start_take_out", payload)
+    response = await _forward_to_dual_pi0(
+        "start_take_out",
+        payload,
+        ensure_service=True,
+        timeout_s=max(DEFAULT_TIMEOUT_S, 60.0),
+    )
     response.setdefault("tool", "take_bottle_out_of_box")
     return response
 
@@ -191,7 +444,12 @@ async def put_bottle_into_box(
         stop_timeout_s=None if stop_timeout_s < 0 else stop_timeout_s,
         restart=restart,
     )
-    response = await _request_safe("start_put_in", payload)
+    response = await _forward_to_dual_pi0(
+        "start_put_in",
+        payload,
+        ensure_service=True,
+        timeout_s=max(DEFAULT_TIMEOUT_S, 60.0),
+    )
     response.setdefault("tool", "put_bottle_into_box")
     return response
 
@@ -199,19 +457,19 @@ async def put_bottle_into_box(
 @mcp.tool()
 async def get_task_status(timeout_s: float = 10.0) -> dict:
     """Get the current task status from the dual PI0 RGB wrist server."""
-    return await _request_safe("status", timeout_s=timeout_s)
+    return await _forward_to_dual_pi0("status", timeout_s=timeout_s)
 
 
 @mcp.tool()
 async def check_service_health(timeout_s: float = 10.0) -> dict:
     """Check whether the dual PI0 RGB wrist inference server is healthy."""
-    return await _request_safe("health", timeout_s=timeout_s)
+    return await _forward_to_dual_pi0("health", timeout_s=timeout_s)
 
 
 @mcp.tool()
 async def stop_task(wait_timeout_s: float = 5.0, timeout_s: float = 30.0) -> dict:
     """Stop the current task on the dual PI0 RGB wrist inference server."""
-    return await _request_safe(
+    return await _forward_to_dual_pi0(
         "stop",
         {"timeout_s": float(wait_timeout_s)},
         timeout_s=timeout_s,
@@ -221,4 +479,6 @@ async def stop_task(wait_timeout_s: float = 5.0, timeout_s: float = 30.0) -> dic
 if __name__ == "__main__":
     print(f"Starting Fourier GR2 mock skill server on {SERVER_HOST}:{SERVER_PORT}...")
     print(f"Forwarding dual PI0 requests to socket: {DUAL_PI0_UNIX_SOCKET_PATH}")
+    if DUAL_PI0_SERVICE_SCRIPT:
+        print(f"Auto-start dual PI0 backend script: {DUAL_PI0_SERVICE_SCRIPT}")
     mcp.run(transport="streamable-http")
