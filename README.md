@@ -16,13 +16,12 @@ fmc3-robotics/
 │   ├── RoboBrain2.0/        # 机器人视觉语言模型（基于 Qwen2.5-VL）
 │   ├── RoboOS/              # 多智能体任务编排系统（Master-Slaver 架构）
 │   ├── RoboSkill/           # 基于 MCP 的通用技能库
-│   ├── fourier/
+│   ├── fourier_demo/
 │   │   ├── Robot/           # GR-2 高层控制 API（基于 Aurora SDK）
 │   │   ├── demo/            # 演示代码
-│   │   └── Tools/           # 工具脚本
-│   ├── lerobot/             # LeRobot 相关示例脚本
-│   └── scripts/
-│       └── convert_tools/   # Dora-Record → LeRobot v3.0 数据集转换工具
+│   │   ├── Tools/           # 工具脚本
+│   │   └── markdown/        # 文档资料
+│   └── doc/                 # 项目文档（任务方案、启动指南等）
 ```
 
 ## 项目说明
@@ -32,8 +31,8 @@ fmc3-robotics/
 | **RoboBrain 2.0** | `projects/RoboBrain2.0/` | 基于 Qwen2.5-VL 的机器人视觉语言模型，用于感知与规划 |
 | **RoboOS** | `projects/RoboOS/` | 多智能体任务编排系统，Master 分解任务 → Slaver 通过 Redis 执行 |
 | **RoboSkill** | `projects/RoboSkill/` | 基于 MCP 协议的通用机器人技能库 |
-| **GR2Robot Wrapper** | `projects/fourier/Robot/` | GR-2 机器人高层控制 API，封装 Aurora SDK（DDS） |
-| **数据集转换工具** | `projects/scripts/convert_tools/` | Dora-Record 格式到 LeRobot v3.0 格式的转换工具 |
+| **GR2Robot Wrapper** | `projects/fourier_demo/Robot/` | GR-2 机器人高层控制 API，封装 Aurora SDK（DDS） |
+| **项目文档** | `projects/doc/` | 任务实现方案、启动指南、环境打包指南等 |
 
 ## 快速开始
 
@@ -64,31 +63,20 @@ curl -X POST http://localhost:5000/publish_task \
 
 ```bash
 conda activate fourier-robot
-cd projects/fourier/Robot
+cd projects/fourier_demo/Robot
 python example.py
 ```
 
 ### 数据集转换（Dora-Record → LeRobot v3.0）
 
-```bash
-conda activate lerobot
-cd projects/scripts/convert_tools
-python convert_dora_to_lerobot.py \
-    --input ./dora-record/<session_id> \
-    --output ./pick_and_place \
-    --task "grab the bottle" \
-    --fps 30 \
-    --robot-type fourier_gr2 \
-    --video-codec libopenh264
-```
+详见数据集转换工具仓库的文档。
 
 ### MCP 技能开发
 
 ```bash
 conda activate fourier-robot
-cd projects/RoboSkill/fmc3-robotics/fourier/gr2
-python skill.py     # 运行技能服务
-mcp dev skill.py    # 开发模式（Inspector）
+cd projects/RoboSkill
+# 具体路径根据技能类型而定
 ```
 
 ## 系统架构
@@ -129,7 +117,6 @@ mcp dev skill.py    # 开发模式（Inspector）
 |------|-----------|-------------|
 | RoboBrain 2.0 / RoboOS | `robobrain2` | 3.10 |
 | RoboSkill / GR2Robot | `fourier-robot` | - |
-| 数据集转换工具 | `lerobot` | 3.10+ |
 
 ## 分支说明
 
