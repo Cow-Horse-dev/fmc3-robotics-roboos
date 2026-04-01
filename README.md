@@ -1,144 +1,93 @@
-# fmc3-robotics
+# fmc3-robotics (cup-grasping)
 
-> "The best way to predict the future is to invent it." — Alan Kay
+本分支是傅里叶 `GR2` 人形机器人的抓取主线分支，面向 RoboOS 调用的抓取、搬运和原子操作集成。
 
-**FMC3 Robotics** 是一个多项目机器人工作空间，围绕 **Fourier 人形机器人（GR-2 / GR-3）** 构建。核心工作流程为：
+这里的主叙事不是通用工作空间，也不是 SO101 单臂实验，而是围绕 `Fourier GR2 + MCP Skill + PI0 推理服务` 这条链路整理可运行能力。
 
-**遥操作采集示教数据 → 转换为 LeRobot 数据集 → 训练策略模型（ACT / Diffusion / PI0 / VLA） → 通过 RoboOS 部署到机器人**
+## 分支定位
 
----
+- 机器人主体：Fourier GR2
+- 任务方向：杯子抓取、桌面 pick-place、原子操作集成
+- 主要调用方式：RoboOS 通过 MCP 调用 GR2 技能服务
+- 当前主链路：`RoboOS -> skill_pi0.py / skill.py -> PI0 service -> GR2`
 
-## 项目结构
+## 当前仓库里可直接对上的实现
 
-```
-fmc3-robotics/
-├── projects/
-│   ├── RoboBrain2.0/        # 机器人视觉语言模型（基于 Qwen2.5-VL）
-│   ├── RoboOS/              # 多智能体任务编排系统（Master-Slaver 架构）
-│   ├── RoboSkill/           # 基于 MCP 的通用技能库
-│   ├── fourier/
-│   │   ├── Robot/           # GR-2 高层控制 API（基于 Aurora SDK）
-│   │   ├── demo/            # 演示代码
-│   │   └── Tools/           # 工具脚本
-│   ├── lerobot/             # LeRobot 相关示例脚本
-│   └── scripts/
-│       └── convert_tools/   # Dora-Record → LeRobot v3.0 数据集转换工具
-```
+### 1. GR2 通用技能服务
 
-## 项目说明
+- `projects/RoboSkill/fmc3-robotics/fourier/gr2/skill.py`
+- `projects/RoboSkill/fmc3-robotics/fourier/gr2/README.md`
 
-| 项目 | 路径 | 说明 |
-|------|------|------|
-| **RoboBrain 2.0** | `projects/RoboBrain2.0/` | 基于 Qwen2.5-VL 的机器人视觉语言模型，用于感知与规划 |
-| **RoboOS** | `projects/RoboOS/` | 多智能体任务编排系统，Master 分解任务 → Slaver 通过 Redis 执行 |
-| **RoboSkill** | `projects/RoboSkill/` | 基于 MCP 协议的通用机器人技能库 |
-| **GR2Robot Wrapper** | `projects/fourier/Robot/` | GR-2 机器人高层控制 API，封装 Aurora SDK（DDS） |
-| **数据集转换工具** | `projects/scripts/convert_tools/` | Dora-Record 格式到 LeRobot v3.0 格式的转换工具 |
+这条链路提供 GR2 的基础 MCP 工具，以及 RoboOS 对接 GR2 的基本服务入口。
 
-## 快速开始
+### 2. GR2 PI0 原子操作技能
 
-### RoboBrain 2.0 — 模型服务
+- `projects/RoboSkill/fmc3-robotics/fourier/gr2/skill_pi0.py`
 
-```bash
-conda activate robobrain2
-cd projects/RoboBrain2.0
-bash startup.sh  # 启动 vLLM 服务，端口 4567
+这是本分支最贴近“抓取主线”的实现入口。它提供：
+
+- `execute_manipulation_task(...)`
+- 自动拉起 PI0 推理服务
+- 通过 Unix Socket 与本地推理进程通信
+- 面向 RoboOS 的完整原子任务触发方式
+
+代码里已经出现类似下面的任务表达：
+
+```text
+grasp the cup and move it to the table
 ```
 
-### RoboOS — 全栈启动
+但需要注意，当前默认 checkpoint 和默认任务仍然偏向现有本地实验配置，不代表仓库里已经附带了杯子抓取专用模型权重。
 
-```bash
-# 前置条件：redis-server 已运行，vLLM 模型服务已在 4567 端口启动
-cd projects/RoboOS
-python master/run.py    # Master 智能体（Flask :5000）
-python slaver/run.py    # Slaver 智能体（连接机器人）
-python deploy/run.py    # Web UI: http://127.0.0.1:8888
+### 3. 现有专项实验
 
-# 发送任务
-curl -X POST http://localhost:5000/publish_task \
-  -H 'Content-Type: application/json' \
-  -d '{"task": "pick up the apple"}'
-```
+- `projects/RoboSkill/fmc3-robotics/fourier/gr2/skill_green_yellow.py`
+- `projects/RoboSkill/fmc3-robotics/fourier/gr2/README_skill_green_yellow.md`
 
-### GR-2 机器人控制
+这部分是黑盖瓶在绿区/黄区之间搬运的专项实验，属于 GR2 主线上的一个已落地任务，不是本分支唯一目标，但可以作为原子抓取任务的参考样例。
 
-```bash
-conda activate fourier-robot
-cd projects/fourier/Robot
-python example.py
-```
+## 快速启动
 
-### 数据集转换（Dora-Record → LeRobot v3.0）
-
-```bash
-conda activate lerobot
-cd projects/scripts/convert_tools
-python convert_dora_to_lerobot.py \
-    --input ./dora-record/<session_id> \
-    --output ./pick_and_place \
-    --task "grab the bottle" \
-    --fps 30 \
-    --robot-type fourier_gr2 \
-    --video-codec libopenh264
-```
-
-### MCP 技能开发
+### 启动 GR2 技能服务
 
 ```bash
 conda activate fourier-robot
 cd projects/RoboSkill/fmc3-robotics/fourier/gr2
-python skill.py     # 运行技能服务
-mcp dev skill.py    # 开发模式（Inspector）
+pip install -r requirements.txt
+python skill.py
 ```
 
-## 系统架构
+### 启动 PI0 抓取技能服务
 
-### RoboOS Master-Slaver 通信
+```bash
+conda activate fourier-robot
+cd projects/RoboSkill/fmc3-robotics/fourier/gr2
+python skill_pi0.py
+```
 
-- **Master**（`master/run.py`）通过 RoboBrain VLM 将自然语言任务分解为子任务
-- **Slaver**（`slaver/run.py`）通过 Redis pub/sub（localhost:6379）接收子任务，并通过语义相似度匹配 MCP 技能执行
-- 场景配置：`master/scene/profile.yaml` 定义可用的机器人和能力
+典型调用示例：
 
-### GR-2 机器人控制组
+```text
+execute_manipulation_task("grasp the cup and move it to the table")
+```
 
-通过 Aurora SDK（DDS）按关节组控制：
+## RoboOS 对接
 
-| 控制组 | 关节数 | 说明 |
-|--------|--------|------|
-| `left_manipulator` / `right_manipulator` | 7 × 2 | 肩部俯仰/横滚/偏航、肘部俯仰、腕部偏航/俯仰/横滚 |
-| `left_hand` / `right_hand` | 6 × 2 | 小指/无名指/中指/食指/拇指近端 |
-| `head` | 2 | 偏航、俯仰 |
-| `waist` | 1-3 | 偏航（始终）、横滚/俯仰（仅 action） |
+在 `projects/RoboOS/slaver/config.yaml` 中把机器人服务指向运行中的 GR2 skill：
 
-### 数据集维度映射（GR-2/GR-3）
+```yaml
+robot:
+  name: fourier_gr2
+  call_type: remote
+  path: "http://<ROBOT_IP>:8000"
+```
 
-- **Action（37D）**：left_arm(7) + right_arm(7) + left_hand(6) + right_hand(6) + head(2) + waist(3) + base(6)
-- **State（45D）**：left_arm(7) + right_arm(7) + head(2) + waist(1) + left_hand(6) + right_hand(6) + base_pos(3) + base_quat(4) + base_rpy(3) + imu_acc(3) + imu_omega(3)
+## 现阶段边界
 
-### 通信协议
+- 本分支主线是 GR2，不以 `lerobot/` 下的 SO101 代码为主
+- 杯子抓取可以沿用 `skill_pi0.py` 的原子任务入口，但仓库中没有提交杯子专用 checkpoint
+- `skill_pi0.py` 里引用了本地绝对路径的推理脚本和模型目录，部署机器需要按实际环境补齐
 
-| 组件 | 协议 | 默认端点 |
-|------|------|----------|
-| RoboOS | Redis pub/sub | localhost:6379 |
-| Aurora SDK | DDS | domain_id |
-| RoboBrain vLLM | HTTP (OpenAI-compatible) | localhost:4567 |
+## 备注
 
-## 环境要求
-
-| 项目 | Conda 环境 | Python 版本 |
-|------|-----------|-------------|
-| RoboBrain 2.0 / RoboOS | `robobrain2` | 3.10 |
-| RoboSkill / GR2Robot | `fourier-robot` | - |
-| 数据集转换工具 | `lerobot` | 3.10+ |
-
-## 分支说明
-
-| 分支 | 说明 |
-|------|------|
-| `main` | 主分支 |
-| `fmc3-shanghai` | 上海团队开发分支 |
-| `fmc3-ingolstadt` | 英戈尔施塔特团队开发分支 |
-
-## License
-
-详见各子项目目录下的 LICENSE 文件。
+仓库中仍保留了一些其他机器人或历史实验代码，但 `cup-grasping` 分支根 README 以后应以 GR2 抓取主线为准，不再沿用原来的通用工作空间说明。
