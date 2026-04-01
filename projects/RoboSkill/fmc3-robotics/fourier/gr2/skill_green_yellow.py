@@ -443,6 +443,20 @@ async def stop_task(wait_timeout_s: float = 5.0, timeout_s: float = 30.0) -> dic
 
 
 @mcp.tool()
+async def initialization() -> dict:
+    """Return the robot to its initialization pose.
+    机器人归位。初始化。回到初始位置。
+    Placeholder only: prints a message and does not execute real motion.
+    """
+    print("[GreenYellow] initialization placeholder called. No real motion is executed.", flush=True)
+    return {
+        "ok": True,
+        "tool": "initialization",
+        "message": "initialization placeholder executed",
+    }
+
+
+@mcp.tool()
 async def get_task_status(timeout_s: float = 10.0) -> dict:
     """Get the current task status from the dual PI0 inference server."""
     return await _forward_to_dual_pi0("status", timeout_s=timeout_s)
