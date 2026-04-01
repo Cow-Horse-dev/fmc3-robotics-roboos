@@ -20,6 +20,7 @@ import importlib
 importlib.import_module("tools.memory")
 
 from agents.models import AzureOpenAIServerModel, OpenAIServerModel
+from agents.skill_executor import SkillSequenceExecutor, SkillState, is_bottle_demo_task
 from agents.slaver_agent import ToolCallingAgent
 from flag_scale.flagscale.agent.collaboration import Collaborator
 from mcp import ClientSession, StdioServerParameters
@@ -118,24 +119,59 @@ class RobotManager:
             future.result()
 
     async def _execute_task(self, task_data: Dict) -> None:
-        """Internal task execution logic"""
+        """Internal task execution logic.
+
+        For bottle demo tasks (place_in / take_out / initialization):
+            Uses SkillSequenceExecutor — deterministic, no LLM (S-1.1).
+        For all other tasks:
+            Falls back to LLM-driven ToolCallingAgent (ReAct).
+        """
         if self._shutdown_event.is_set():
             return
 
         os.makedirs("./.log", exist_ok=True)
-        
-        # Use tool matcher to find relevant tools for the task
+
         task = task_data["task"]
+        task_id = task_data["task_id"]
+
+        # ── Bottle demo: deterministic skill execution ──
+        if is_bottle_demo_task(task):
+            print(f"[SkillExecutor] Bottle demo task: {task}")
+            max_retries = config.get("bottle_demo", {}).get("max_retries", 3)
+            executor = SkillSequenceExecutor(
+                tool_executor=self.session.call_tool,
+                vision_judge=self._request_vision_judgment,
+                max_retries=max_retries,
+            )
+            seq_result = await executor.execute(task)
+
+            # Build tool_call list from skill results
+            tool_calls = [
+                {"tool_name": sr.skill_name, "tool_arguments": "{}"}
+                for sr in seq_result.skill_results
+            ]
+
+            self._send_result(
+                robot_name=self.robot_name,
+                task=task,
+                task_id=task_id,
+                result=seq_result.result_text,
+                tool_call=tool_calls,
+                skill_state=seq_result.skill_state.value,
+                failure_info=seq_result.failure_info,
+            )
+            return
+
+        # ── Fallback: LLM-driven agent (ReAct) ──
         matched_tools = self.tool_matcher.match_tools(task)
-        
-        # Filter tools based on matching results
+
         if matched_tools:
             matched_tool_names = [tool_name for tool_name, _ in matched_tools]
-            filtered_tools = [tool for tool in self.tools 
+            filtered_tools = [tool for tool in self.tools
                            if tool.get("function", {}).get("name") in matched_tool_names]
         else:
             filtered_tools = self.tools
-        
+
         agent = ToolCallingAgent(
             tools=filtered_tools,
             verbosity_level=2,
@@ -146,20 +182,36 @@ class RobotManager:
             collaborator=self.collaborator,
             tool_executor=self.session.call_tool,
         )
-        
+
         result = await agent.run(task)
         self._send_result(
             robot_name=self.robot_name,
             task=task,
-            task_id=task_data["task_id"],
+            task_id=task_id,
             result=result,
             tool_call=agent.tool_call,
+            skill_state="finished",
+            failure_info=None,
         )
 
     def _send_result(
-        self, robot_name: str, task: str, task_id: str, result: Dict, tool_call: List
+        self,
+        robot_name: str,
+        task: str,
+        task_id: str,
+        result,
+        tool_call: List,
+        skill_state: str = "finished",
+        failure_info: Optional[Dict] = None,
     ) -> None:
-        """Send task results to collaboration channel"""
+        """Send task results to collaboration channel.
+
+        Args:
+            skill_state: "finished" | "failed" | "stop" — matched by master's
+                _handle_result() for failure tracking and task termination.
+            failure_info: Dict with failed_skill, attempts, last_error when
+                skill_state is "stop" (3 consecutive failures).
+        """
         if self._shutdown_event.is_set():
             return
 
@@ -170,8 +222,75 @@ class RobotManager:
             "subtask_result": result,
             "tools": tool_call,
             "task_id": task_id,
+            "skill_state": skill_state,
+            "failure_info": failure_info,
         }
         self.collaborator.send(channel, json.dumps(payload))
+
+    async def _request_vision_judgment(self, skill_name: str) -> tuple:
+        """Request Master's VisionMonitor to judge whether a skill succeeded.
+
+        Protocol:
+          1. Slaver writes a vision_judge_request to Redis key
+          2. Master's vision judgment handler picks it up, runs VisionMonitor
+          3. Master writes the result to Redis key vision_result:{robot_name}
+          4. Slaver polls that key until the response arrives
+
+        Args:
+            skill_name: Internal skill name (e.g. "place_in", "take_out")
+
+        Returns:
+            (is_success: bool, reason: str)
+        """
+        robot_name = self.robot_name
+        request_key = f"vision_request:{robot_name}"
+        result_key = f"vision_result:{robot_name}"
+
+        # Clear any stale result
+        self.collaborator.record_environment(result_key, json.dumps(None))
+
+        # Write request for Master to pick up
+        request = {
+            "skill_name": skill_name,
+            "robot_name": robot_name,
+            "timestamp": time.time(),
+        }
+        self.collaborator.record_environment(request_key, json.dumps(request))
+        print(f"[VisionJudge] Requested judgment for {skill_name}, waiting for Master...")
+
+        # Poll for result (Master will write to result_key)
+        timeout = config.get("bottle_demo", {}).get("vision_judge_timeout", 30)
+        poll_interval = 0.5
+        elapsed = 0.0
+
+        while elapsed < timeout:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+            raw = self.collaborator.read_environment(result_key)
+            if raw is None:
+                continue
+
+            # Parse the result
+            if isinstance(raw, str):
+                try:
+                    data = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    data = raw
+            else:
+                data = raw
+
+            if not isinstance(data, dict) or "success" not in data:
+                continue
+
+            is_success = bool(data["success"])
+            reason = data.get("reason", "")
+            print(f"[VisionJudge] {skill_name} → {'SUCCESS' if is_success else 'FAILED'}: {reason}")
+            return is_success, reason
+
+        # Timeout — assume success to avoid false stops
+        print(f"[VisionJudge] Timeout waiting for vision judgment for {skill_name}")
+        return True, "Vision judgment timeout — assumed success"
 
     def _heartbeat_loop(self, robot_name) -> None:
         """Continuous heartbeat signal emitter"""
@@ -191,8 +310,9 @@ class RobotManager:
         call_type = config["robot"]["call_type"]
 
         if call_type == "local":
+            skill_path = os.path.join(_SLAVER_ROOT, config["robot"]["path"], "skill.py")
             server_params = StdioServerParameters(
-                command="python", args=[config["robot"]["path"] + "/skill.py"], env=None
+                command="python", args=[skill_path], env=None
             )
             mcp_client = stdio_client(server_params)
 

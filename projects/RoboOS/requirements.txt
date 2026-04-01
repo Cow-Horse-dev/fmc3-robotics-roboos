@@ -39,7 +39,7 @@ jsonschema==4.24.0
 jsonschema-specifications==2025.4.1
 markdown-it-py==3.0.0
 MarkupSafe==3.0.2
-mcp>=1.9.4
+mcp==1.10.1
 mdurl==0.1.2
 numpy==2.2.5
 openai==1.75.0

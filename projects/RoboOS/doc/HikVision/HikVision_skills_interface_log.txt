@@ -1,0 +1,240 @@
+================================================================================
+  RoboOS — GR2 Robot Connection Log
+  Date: 2026-03-07 13:43:56  (initial)
+  Updated: 2026-03-07  — S1 coordinate_transform added (19 tools total)
+================================================================================
+
+STATUS: Connected to robot (gr2_robot) via MCP
+        19 tools registered | Tool matcher training complete | Redis subscription active
+
+--------------------------------------------------------------------------------
+  REGISTERED TOOLS (19 total)
+--------------------------------------------------------------------------------
+
+── P  PERCEPTION ──────────────────────────────────────────────────────────────
+
+[P1] visual_localize
+     Description : Activate visual servoing to locate the target object or
+                   position in the workspace.
+     Constraint  : Do not call when the target has already been successfully
+                   localized in this step.
+     Arguments   :
+       • target (string, required) — the object or location to localize
+                   e.g. 'camera', 'fixture_slot', 'lens_cap'
+
+[P2] visual_inspect
+     Description : Visually inspect the target for surface damage or defects
+                   (e.g. lens scratches).
+     Constraint  : Do not call when inspection of this target has already been
+                   performed in this step.
+     Arguments   :
+       • target (string, required) — the component to inspect
+                   e.g. 'camera_lens'
+
+[P3] qr_code_recognize
+     Description : Activate the QR code scanner to read the product code on
+                   the camera body.
+     Constraint  : Do not call when the QR code has already been successfully
+                   scanned in this step.
+     Arguments   : (none)
+
+[P4] read_screen_result
+     Description : Read and interpret the airtightness test result displayed
+                   on the PC screen.
+     Constraint  : Do not call when the screen result has already been read
+                   in this step.
+     Arguments   : (none)
+
+── M  MOTION ──────────────────────────────────────────────────────────────────
+
+[M1] move_to_position
+     Description : Move the specified arm(s) to the target position in the
+                   workspace.
+     Constraint  : Do not call when the arm is already at the target position.
+     Arguments   :
+       • target (string, required) — destination position
+                   e.g. 'transferBoxIn', 'inspectionStation', 'qrScanner'
+       • hand   (string, default='both') — which arm to move
+                   'left' | 'right' | 'both'
+
+[M2] bimanual_sync_move
+     Description : Move both arms simultaneously to their respective targets
+                   with time offset < 100ms.
+     Constraint  : Do not call when both arms are already at their target
+                   positions.
+     Arguments   :
+       • left_target  (string, required) — destination for the left arm
+                       e.g. 'green_button_left'
+       • right_target (string, required) — destination for the right arm
+                       e.g. 'green_button_right'
+
+[M3] set_orientation
+     Description : Rotate the held object or wrist to the specified
+                   orientation.
+     Constraint  : Do not call when the object is already in the target
+                   orientation.
+     Arguments   :
+       • object      (string, required) — the object being reoriented
+                      e.g. 'camera', 'lens_cap'
+       • orientation (string, required) — desired orientation descriptor
+                      e.g. 'lens_up', 'lens_down', 'lens_toward_person',
+                           'qr_code_toward_scanner'
+
+[M4] plan_path
+     Description : Plan a collision-free trajectory to the target, avoiding
+                   the inspection station, transfer boxes, QR scanner, and
+                   other workspace obstacles.
+     Constraint  : Do not call when a valid path to the target has already
+                   been planned in this step.
+     Arguments   :
+       • target (string, required) — destination to plan a path to
+                   e.g. 'fixture_slot', 'transferBoxOut'
+
+── G  GRASPING ────────────────────────────────────────────────────────────────
+
+[G1] open_hand
+     Description : Spread all five fingers of the specified hand to open
+                   position.
+     Constraint  : Do not call when the hand is already fully open.
+     Arguments   :
+       • hand (string, default='both') — which hand to open
+                'left' | 'right' | 'both'
+
+[G2] precision_pinch
+     Description : Perform a two-finger precision pinch grasp on the target
+                   object with ±0.3mm accuracy.
+     Constraint  : Do not call when the object has already been successfully
+                   grasped.
+     Arguments   :
+       • object (string, required) — the object to grasp
+                  e.g. 'camera', 'lens_cap'
+       • hand   (string, required) — which hand to use
+                  'left' | 'right'
+
+[G3] force_controlled_grasp
+     Description : Perform a force-controlled grasp on the target object.
+                   Force range: 0.5–2N to prevent damage.
+     Constraint  : Do not call when the object has already been grasped with
+                   appropriate force.
+     Arguments   :
+       • object  (string, required) — the object to grasp
+                   e.g. 'camera'
+       • hand    (string, required) — which hand to use
+                   'left' | 'right'
+       • force_n (float, default=1.0) — target grasp force in Newtons
+                   range: 0.5–2.0
+
+[G4] lift_object
+     Description : Lift the currently held object upward to clear the surface
+                   or container.
+     Constraint  : Do not call when the object has already been lifted.
+     Arguments   :
+       • object (string, required) — the object being lifted
+                  e.g. 'camera'
+
+── O  OPERATION ───────────────────────────────────────────────────────────────
+
+[O1] place_object
+     Description : Place the held object at the specified target location.
+     Constraint  : Do not call when the object has already been placed at
+                   the target.
+     Arguments   :
+       • target (string, required) — where to place the object
+                  e.g. 'fixture_slot', 'transferBoxOut', 'lens_cap_area',
+                       'transferBoxIn'
+       • object (string, required) — the object being placed
+                  e.g. 'camera', 'lens_cap'
+
+[O2] press_dual_buttons
+     Description : Simultaneously press two buttons using both index fingers
+                   with time offset < 100ms.
+     Constraint  : Do not call when the buttons have already been pressed to
+                   start the current test cycle.
+     Arguments   :
+       • left_button  (string, required) — the left button to press
+                       e.g. 'green_button_left'
+       • right_button (string, required) — the right button to press
+                       e.g. 'green_button_right'
+
+[O3] lens_cap_operation
+     Description : Insert or pull the lens cap with ±0.3mm alignment
+                   precision.
+     Constraint  : Do not call when the lens cap is already in the desired
+                   state (on/off).
+     Arguments   :
+       • action (string, required) — operation type
+                  'insert' (place cap onto lens) | 'pull' (remove cap)
+       • hand   (string, required) — which hand performs the operation
+                  'left' | 'right'
+
+[O4] fine_align
+     Description : Perform sub-millimeter fine alignment of the held object
+                   with the target slot or position (±0.3mm).
+     Constraint  : Do not call when the object is already aligned with the
+                   target.
+     Arguments   :
+       • target (string, required) — the alignment reference
+                  e.g. 'fixture_slot', 'qr_scanner_beam',
+                       'transferBoxOut_slot'
+
+── C  COORDINATION ────────────────────────────────────────────────────────────
+
+[C1] hand_transfer
+     Description : Transfer a held object from one hand to the other.
+     Constraint  : Do not call when the object is already held by the target
+                   hand.
+     Arguments   :
+       • object    (string, required) — the object to transfer
+                    e.g. 'camera', 'lens_cap'
+       • from_hand (string, required) — the hand currently holding the object
+                    'left' | 'right'
+       • to_hand   (string, required) — the hand that will receive the object
+                    'left' | 'right'
+
+── I  INTERACTION ─────────────────────────────────────────────────────────────
+
+[I1] wait_for_signal
+     Description : Wait for an external signal or event before proceeding
+                   (e.g. test completion, scan confirmation).
+     Constraint  : Do not call when the signal has already been received in
+                   this step.
+     Arguments   :
+       • signal    (string, required) — the event to wait for
+                    e.g. 'airtightness_test_complete', 'qr_scan_success'
+       • timeout_s (integer, default=60) — maximum wait time in seconds
+
+── S  SYSTEM  [新增 2026-03-07] ──────────────────────────────────────────────
+
+[S1] coordinate_transform
+     Description : Calculate the target placement position by applying a
+                   sequential offset from a taught reference point. Used for
+                   ordered stacking tasks, e.g. placing cameras into
+                   transferBoxOut in right-to-left, top-to-bottom order
+                   (Step 8).
+     Constraint  : Do not call when the target slot position has already been
+                   calculated for the current item.
+     Arguments   :
+       • reference_point (string, required) — taught base slot position to
+                          offset from
+                          e.g. 'transferBoxOut_slot_0_0'
+       • offset_index    (integer, required) — sequential index of the current
+                          item (0-based); row/column offset computed
+                          automatically
+
+================================================================================
+  SYSTEM STATUS
+================================================================================
+
+  Tool Matcher Training
+  ├── Model   : Sentence Transformer (semantic embedding)
+  ├── Tools   : 19 processed
+  └── Status  : ✅ Training completed
+
+  Redis Connection
+  ├── Channel : roboos_to_gr2_robot
+  ├── Type    : subscribe
+  └── Status  : ✅ Subscribed successfully
+
+  Overall   : ✅ Connection success — robot ready to receive tasks
+
+================================================================================

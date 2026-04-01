@@ -3,17 +3,12 @@ import json
 import os
 import socket
 import subprocess
-import signal
 from pathlib import Path
 
 import redis
 import requests
 from flask import Flask, jsonify, render_template, request, send_from_directory
 from ruamel.yaml import YAML
-# Add projects directory to sys.path to allow importing Robot SDK
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../fourier')))
-# from fourier_aurora_client import AuroraClient # 已移除，改为子进程调用
 from utils import (
     handle_local_tools,
     handle_remote_tools,
@@ -29,8 +24,8 @@ app = Flask(__name__, static_folder="assets")
 
 services = {
     "inference": {"pid": None, "port": None},
-    "master": {"pid": None, "port": 6000},
-    "slaver": {"pid": None, "cmd": None, "cwd": None},
+    "master": {"pid": None, "port": 5000},
+    "slaver": {"pid": None},
 }
 
 
@@ -208,11 +203,15 @@ def validate_config():
     if call_type == "remote":
         try:
             url = path.rstrip("/") + "/mcp"
-
-            requests.post(url, timeout=5)
+            resp = requests.get(url, timeout=5, allow_redirects=True)
+            if resp.status_code >= 500:
+                return (
+                    jsonify({"success": False, "message": f"mcp service exception (HTTP {resp.status_code})"}),
+                    400,
+                )
         except requests.exceptions.RequestException as e:
             return (
-                jsonify({"success": False, "message": "mcp service exception"}),
+                jsonify({"success": False, "message": f"mcp service unreachable: {e}"}),
                 400,
             )
 
@@ -358,16 +357,13 @@ def start_slaver():
         ).strip()
 
         with open("slaver.log", "w") as log:
-            proc = subprocess.Popen(
+            subprocess.Popen(
                 ["bash", "-c", bash_command],
                 stdout=log,
                 stderr=log,
                 cwd=pwd,
                 preexec_fn=os.setpgrp,
             )
-            services["slaver"]["pid"] = proc.pid
-            services["slaver"]["cmd"] = ["bash", "-c", bash_command]
-            services["slaver"]["cwd"] = pwd
         return jsonify(
             {
                 "success": True,
@@ -432,87 +428,12 @@ def save_tool_config():
             if section not in config:
                 return jsonify({"error": f"Missing section: {section}"}), 400
 
-        with open(os.path.abspath(os.path.join(os.path.dirname(__file__), "../slaver/robot_tools/robot_profile.yaml")), "w") as f:
+        with open(os.path.expanduser("~/workspace/RoboOS/slaver/robot_tools/robot_profile.yaml"), "w") as f:
             json.dump(config, f, indent=4)
 
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/estop", methods=["POST"])
-def emergency_stop():
-    """
-    Emergency Stop Endpoint
-    Directly invokes the Robot SDK to send a stop command via DDS.
-    Bypasses RoboOS task scheduling for immediate safety.
-    """
-    try:
-        data = request.json
-        robot_name = data.get("robot_name", "gr2")
-
-        # Dynamic import to handle dependency availability
-        try:
-            from Robot.gr2_robot import GR2Robot
-        except ImportError as e:
-            return jsonify({
-                "success": False,
-                "message": f"Robot SDK Import Error: {str(e)}. Please ensure 'projects/Robot' is in path and dependencies are installed."
-            }), 500
-
-        # Instantiate Robot Interface (Default Domain ID 123)
-        # Note: This creates a new DDS participant.
-        # In a production environment, repeated creation might be heavy, but for E-Stop it's acceptable.
-        robot = GR2Robot(robot_name=robot_name if robot_name != "all" else "gr2")
-
-        # Execute Hardware Stop
-        robot.stop()
-
-        return jsonify({
-            "success": True,
-            "message": f"STOP Signal Sent to {robot_name} (FSM set to SECURITY/9)"
-        })
-
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "message": f"Emergency Stop Execution Failed: {str(e)}"
-        }), 500
-
-
-@app.route("/api/robot-reset", methods=["POST"])
-def robot_reset():
-    """
-    Force Robot FSM to User Command Mode (10)
-    Useful to recover from E-Stop state.
-    """
-    try:
-        try:
-            from Robot.gr2_robot import GR2Robot
-        except ImportError as e:
-            return jsonify({"success": False, "message": f"Import Error: {str(e)}"}), 500
-
-        robot = GR2Robot()
-        # Assuming FSM 10 is the standard control mode based on user's context in frontend
-        # GR2Robot.stand() usually sets it to 10 or similar?
-        # Based on SDK: stand() -> FSM_STAND.
-        # Let's trust the user's intent for "Reset" or use a generic 'enable' if available.
-        # But SDK usually has stand(). Let's use stand() as a safe reset or just return success if logic not confirmed.
-        # Wait, the frontend code for reset was sending /api/robot-reset.
-        # I should probably implement this too since I saw it in the frontend code I edited.
-
-        # Checking gr2_robot.py for a 'reset' or 'start' method?
-        # SDK usually has stand().
-        # Let's just implement it safely.
-
-        robot.stand() # Try to put it back in standing mode
-
-        return jsonify({
-            "success": True,
-            "message": "Reset signal sent (Stand Mode)"
-        })
-    except Exception as e:
-         return jsonify({"success": False, "message": str(e)}), 500
 
 
 if __name__ == "__main__":

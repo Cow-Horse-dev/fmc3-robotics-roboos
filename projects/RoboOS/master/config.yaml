@@ -29,12 +29,12 @@ tts:
 # Cloud Server Infos
 model:
   # Model name for the cloud server
-  model_select: "~/workspace/models/RoboBrain2.0-3B"
+  model_select: "/home/haoanw/DataCenter/RoboBrain2.0-7B"
   # Number of retries for planning
   model_retry_planning: 5
   model_dict:
     # Model name for the cloud server
-    cloud_model: "~/workspace/models/RoboBrain2.0-3B"
+    cloud_model: "/home/haoanw/DataCenter/RoboBrain2.0-7B"
     # Deploy for the cloud server
     cloud_type: "default"
     # API key for the cloud server
@@ -67,6 +67,23 @@ logger:
   master_logger_file: ".logs/master_agent.log"
   # Path to save the robot memory file
   robot_memory_yaml: ".log/robot_memory.yaml"
+
+# ─── Vision Monitor (OpenAI top-view camera) ─────────────────────────────────
+vision_monitor:
+  # Set to true to enable active vision monitoring during task execution
+  enable: true
+  # USB camera device ID (ls /dev/video* to find yours)
+  camera_id: /dev/video0
+  # OpenAI API key
+  api_key: "add key before execution"
+  # Optional: custom base URL for OpenAI-compatible endpoints
+  # base_url: "https://api.openai.com/v1"
+  # Model name (must support vision, e.g. gpt-4o, gpt-4o-mini)
+  model: "gpt-4o"
+  # Capture interval in seconds
+  interval_sec: 5.0
+  # Minimum confidence to treat a judgment as actionable
+  confidence_threshold: 0.7
 
 # Output reasoning context, time cost and other information
 profiling: true

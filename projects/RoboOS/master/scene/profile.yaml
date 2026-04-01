@@ -1,35 +1,9 @@
 scene:
-  - name: kitchenTable
-    type: table
+  - name: desk
+    type: surface
     contains:
-      - apple
-      - pear
-      - banana
-      - knife
-
-  - name: customTable
-    type: table
-    contains:
-      - basket
-      - plate
       - cup
-      - largeBox
 
-  - name: servingTable
-    type: table
-    contains:
-      - bowl
-      - fork
-      - spoon
-
-  - name: basket
+  - name: box
     type: container
-    contains:
-      - egg
-
-  - name: largeBox
-    type: container
-    contains:
-      - bottle1
-      - bottle2
-      - bottle3
+    contains: []

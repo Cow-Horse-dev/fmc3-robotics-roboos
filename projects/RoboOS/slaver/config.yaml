@@ -4,19 +4,19 @@ tool:
   # Tool matching configuration
   matching:
     # Maximum number of tools to match for each task
-    max_tools: 3
+    max_tools: 5
     # Minimum similarity score threshold (0.0 to 1.0)
     min_similarity: 0.1
 
 # Cloud Server Infos
 model:
   # Model name for the cloud server
-  model_select: "/home/phl/workspace/models/RoboBrain2.0-3B"
+  model_select: "/home/haoanw/DataCenter/RoboBrain2.0-7B"
   # Number of retries for planning
   model_retry_planning: 5
   model_dict:
     # Model name for the cloud server
-    cloud_model: "/home/phl/workspace/models/RoboBrain2.0-3B"
+    cloud_model: "/home/haoanw/DataCenter/RoboBrain2.0-7B"
     # Deploy for the cloud server
     cloud_type: "default"
     # API key for the cloud server
@@ -44,15 +44,18 @@ camera:
   # Path to save camera images
   image_path: "images/"
 
-# Robot 
+# Robot
 robot:
   # "local" with a fold name such as "demo_robot"
   # "remote" with URL such as "http://127.0.0.1:8000", and run the Python script 'skill.py' on the robot itself.
-  # call_type: local
-  # path: "demo_robot_local"
   name: fourier_gr2
   call_type: remote
   path: "http://127.0.0.1:8000"
+
+# ─── Bottle Demo ──────────────────────────────────────────────────────────────
+bottle_demo:
+  # Max consecutive failures before task termination (UC-10 / M-3.1)
+  max_retries: 3
 
 # Output reasoning context, time cost and other information
 profiling: true
