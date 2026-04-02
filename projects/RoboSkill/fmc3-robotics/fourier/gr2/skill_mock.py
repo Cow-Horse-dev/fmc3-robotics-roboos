@@ -407,21 +407,23 @@ async def take_bottle_out_of_box(
     Internally forwards to the dual PI0 RGB wrist inference server.
     """
     print("[MOCK->PI0] Forwarding take_bottle_out_of_box to dual PI0 server...", flush=True)
-    payload = _build_start_payload(
-        max_steps=None if max_steps < 0 else max_steps,
-        fps=None if fps < 0 else fps,
-        fsm_state=None if fsm_state < 0 else fsm_state,
-        stop_timeout_s=None if stop_timeout_s < 0 else stop_timeout_s,
-        restart=restart,
-    )
-    response = await _forward_to_dual_pi0(
-        "start_take_out",
-        payload,
-        ensure_service=True,
-        timeout_s=max(DEFAULT_TIMEOUT_S, 60.0),
-    )
-    response.setdefault("tool", "take_bottle_out_of_box")
-    return response
+    # payload = _build_start_payload(
+    #     max_steps=None if max_steps < 0 else max_steps,
+    #     fps=None if fps < 0 else fps,
+    #     fsm_state=None if fsm_state < 0 else fsm_state,
+    #     stop_timeout_s=None if stop_timeout_s < 0 else stop_timeout_s,
+    #     restart=restart,
+    # )
+    # response = await _forward_to_dual_pi0(
+    #     "start_take_out",
+    #     payload,
+    #     ensure_service=True,
+    #     timeout_s=max(DEFAULT_TIMEOUT_S, 60.0),
+    # )
+    # response.setdefault("tool", "take_bottle_out_of_box")
+    # return response
+    time.sleep(15.0)
+    return
 
 
 @mcp.tool()
@@ -437,21 +439,23 @@ async def put_bottle_into_box(
     Internally forwards to the dual PI0 RGB wrist inference server.
     """
     print("[MOCK->PI0] Forwarding put_bottle_into_box to dual PI0 server...", flush=True)
-    payload = _build_start_payload(
-        max_steps=None if max_steps < 0 else max_steps,
-        fps=None if fps < 0 else fps,
-        fsm_state=None if fsm_state < 0 else fsm_state,
-        stop_timeout_s=None if stop_timeout_s < 0 else stop_timeout_s,
-        restart=restart,
-    )
-    response = await _forward_to_dual_pi0(
-        "start_put_in",
-        payload,
-        ensure_service=True,
-        timeout_s=max(DEFAULT_TIMEOUT_S, 60.0),
-    )
-    response.setdefault("tool", "put_bottle_into_box")
-    return response
+    # payload = _build_start_payload(
+    #     max_steps=None if max_steps < 0 else max_steps,
+    #     fps=None if fps < 0 else fps,
+    #     fsm_state=None if fsm_state < 0 else fsm_state,
+    #     stop_timeout_s=None if stop_timeout_s < 0 else stop_timeout_s,
+    #     restart=restart,
+    # )
+    # response = await _forward_to_dual_pi0(
+    #     "start_put_in",
+    #     payload,
+    #     ensure_service=True,
+    #     timeout_s=max(DEFAULT_TIMEOUT_S, 60.0),
+    # )
+    # response.setdefault("tool", "put_bottle_into_box")
+    # return response
+    time.sleep(15.0)
+    return
 
 
 @mcp.tool()
