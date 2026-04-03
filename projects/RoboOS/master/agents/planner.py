@@ -2,6 +2,7 @@ from typing import Any, Dict, Union
 
 import yaml
 from agents.prompts import MASTER_PLANNING_PLANNING
+from agents.prompt_repair import PromptRepairEngine
 from flag_scale.flagscale.agent.collaboration import Collaborator
 from openai import AzureOpenAI, OpenAI
 
@@ -22,6 +23,9 @@ class GlobalTaskPlanner:
         )
 
         self.profiling = config["profiling"]
+        self.repair_engine = PromptRepairEngine(
+            max_replan=config.get("model", {}).get("max_replan", 3)
+        )
 
     def _get_model_info_from_config(self, config: Dict) -> tuple:
         """Get the model info from config."""
@@ -105,5 +109,66 @@ class GlobalTaskPlanner:
         )
         self.display_profiling_info("response", response)
         self.display_profiling_info("response.usage", response.usage)
+
+        return response.choices[0].message.content
+
+    def repair_forward(
+        self,
+        original_task: str,
+        failed_subtask: str,
+        failed_robot: str,
+        failure_info: Dict,
+        completed_subtasks: list,
+        replan_attempt: int,
+    ) -> str:
+        """Generate a repair plan using failure context.
+
+        Instead of the generic planning prompt, this uses the
+        REPAIR_PLANNING_PROMPT which includes failure analysis
+        and instructs the LLM to avoid the same failure.
+        """
+        all_robots_name = self.collaborator.read_all_agents_name()
+        all_robots_info = self.collaborator.read_all_agents_info()
+        all_environments_info = self.collaborator.read_environment(name=None)
+
+        repair_prompt = self.repair_engine.build_repair_prompt(
+            original_task=original_task,
+            failed_subtask=failed_subtask,
+            failed_robot=failed_robot,
+            failure_info=failure_info,
+            completed_subtasks=completed_subtasks,
+            replan_attempt=replan_attempt,
+            robot_name_list=str(all_robots_name),
+            robot_tools_info=str(all_robots_info),
+            scene_info=str(all_environments_info),
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": repair_prompt}],
+            },
+        ]
+
+        self.display_profiling_info("repair_messages", messages)
+
+        from datetime import datetime
+
+        start_inference = datetime.now()
+        response = self.global_model.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            temperature=0.4,  # slightly higher for creative repair strategies
+            top_p=0.9,
+            max_tokens=2048,
+            seed=None,  # no fixed seed — allow different repair attempts
+        )
+        end_inference = datetime.now()
+
+        self.display_profiling_info(
+            "repair inference time",
+            f"start:{start_inference} end:{end_inference} during:{end_inference - start_inference}",
+        )
+        self.display_profiling_info("repair response", response)
 
         return response.choices[0].message.content

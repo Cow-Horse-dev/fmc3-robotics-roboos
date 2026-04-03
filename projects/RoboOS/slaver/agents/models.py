@@ -310,11 +310,9 @@ class OpenAIServerModel(Model):
 
         content = (
             "Rules:\n"
-            "- You MUST call a tool to complete the task. Do NOT respond with text only.\n"
             "- Only call a tool IF AND ONLY IF the action is required by the task AND has NOT already been completed.\n"
             "- Do NOT call the same tool multiple times for the same object/location.\n"
-            "- Do NOT make assumptions beyond the task description.\n"
-            "- Select the most appropriate tool from the available tools list.\n\n"
+            "- Do NOT make assumptions beyond the task description.\n\n"
         )
 
         content += f"Task: {task}\n\n"

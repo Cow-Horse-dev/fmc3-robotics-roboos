@@ -1,35 +1,25 @@
 scene:
-  - name: kitchenTable
-    type: table
-    contains:
-      - apple
-      - pear
-      - banana
-      - knife
-
-  - name: customTable
-    type: table
-    contains:
-      - basket
-      - plate
-      - cup
-      - largeBox
-
-  - name: servingTable
-    type: table
-    contains:
-      - bowl
-      - fork
-      - spoon
-
-  - name: basket
+  - name: transferBoxIn
     type: container
     contains:
-      - egg
+      - camera
 
-  - name: largeBox
+  - name: transferBoxOut
     type: container
+    contains: []
+
+  - name: inspectionStation
+    type: workstation
     contains:
-      - bottle1
-      - bottle2
-      - bottle3
+      - fixture_slot
+      - green_button_left
+      - green_button_right
+      - lens_cap_area
+
+  - name: qrScanner
+    type: scanner
+    contains: []
+
+  - name: screen
+    type: display
+    contains: []

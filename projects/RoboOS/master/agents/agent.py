@@ -6,14 +6,24 @@ import re
 import threading
 import uuid
 from collections import defaultdict
-from typing import Any, Dict
+from typing import Dict
 
 import yaml
 from agents.planner import GlobalTaskPlanner
 from flag_scale.flagscale.agent.collaboration import Collaborator
 
+# Pattern to detect tasks that already contain an explicit skill sequence.
+# These should bypass the LLM planner and go directly to the slaver.
+_HAS_SKILL_SEQUENCE = re.compile(
+    r"Execute the following skills strictly in order:\s*(.+)",
+    re.IGNORECASE,
+)
+
 
 class GlobalAgent:
+    # Maximum replan attempts per task_id before giving up.
+    MAX_REPLAN_PER_TASK = 3
+
     def __init__(self, config_path="config.yaml"):
         """Initialize GlobalAgent"""
         self._init_config(config_path)
@@ -21,11 +31,23 @@ class GlobalAgent:
         self.collaborator = Collaborator.from_config(self.config["collaborator"])
         self.planner = GlobalTaskPlanner(self.config)
 
+        self.MAX_REPLAN_PER_TASK = self.config.get("model", {}).get("max_replan", 3)
+
         self.logger.info(f"Configuration loaded from {config_path} ...")
         self.logger.info(f"Master Configuration:\n{self.config}")
 
         self._init_scene(self.config["profile"])
         self._start_listener()
+
+        # --- Replan tracking state ---
+        # Per-task replan counter — prevents infinite replan loops.
+        self._replan_counts: dict = {}
+        self._replan_lock = threading.Lock()
+        # Task registry: stores the original task description and tracks
+        # which subtasks have already completed successfully.
+        # Key: task_id  Value: {original_task, completed_subtasks: []}
+        self._task_registry: dict = {}
+        self._registry_lock = threading.Lock()
 
     def _init_logger(self, logger_config):
         """Initialize an independent logger for GlobalAgent"""
@@ -94,55 +116,214 @@ class GlobalAgent:
         )
 
     def _handle_result(self, data: str):
+        """Handle subtask results from slaver agents.
+
+        Success path : mark robot free, track completed subtask, let
+                       _dispath_subtasks_async continue to the next group.
+        Failure path :
+          1. Parse failure_info from the slaver (type / skill / reason /
+             completed_steps / failed_step).
+          2. Use PromptRepairEngine + planner.repair_forward() to build a
+             context-rich repair prompt so the LLM knows exactly where the
+             chain broke and what had already succeeded.
+          3. Guard against infinite loops with _replan_counts[task_id].
+          4. Fire publish_global_task (repair variant) in a daemon thread.
+        """
         data = json.loads(data)
 
-        """Handle results from agents."""
         robot_name = data.get("robot_name")
         subtask_handle = data.get("subtask_handle")
         subtask_result = data.get("subtask_result")
+        subtask_status = data.get("subtask_status", "success")
+        failure_info = data.get("failure_info")
+        task_id = data.get("task_id", "")
 
-        # TODO: Task result should be refered to the next step determination.
-        if robot_name and subtask_handle and subtask_result:
-            self.logger.info(
-                f"================ Received result from {robot_name} ================"
-            )
-            self.logger.info(f"Subtask: {subtask_handle}\nResult: {subtask_result}")
-            self.logger.info(
-                "===================================================================="
-            )
-            self.collaborator.update_agent_busy(robot_name, False)
-
-        else:
+        if not (robot_name and subtask_handle and subtask_result):
             self.logger.warning("[WARNING] Received incomplete result data")
             self.logger.info(
-                f"================ Received result from {robot_name} ================"
+                f"subtask_handle={subtask_handle} result={subtask_result}"
             )
-            self.logger.info(f"Subtask: {subtask_handle}\nResult: {subtask_result}")
+            return
+
+        self.logger.info(
+            f"================ Received result from {robot_name} ================"
+        )
+        self.logger.info(f"Subtask : {subtask_handle}")
+        self.logger.info(f"Result  : {subtask_result}")
+        self.logger.info(f"Status  : {subtask_status}")
+        if failure_info:
             self.logger.info(
-                "===================================================================="
+                f"Failure : {json.dumps(failure_info, ensure_ascii=False)}"
+            )
+        self.logger.info(
+            "===================================================================="
+        )
+
+        # Always mark robot as free so it can accept new work.
+        self.collaborator.update_agent_busy(robot_name, False)
+
+        # ── Success path ──────────────────────────────────────────────
+        if subtask_status != "failure":
+            self.logger.info(
+                f"[SUCCESS] task_id={task_id} subtask completed."
+            )
+            # Track completed subtasks so the repair prompt can skip them.
+            with self._registry_lock:
+                reg = self._task_registry.get(task_id)
+                if reg:
+                    reg["completed_subtasks"].append(
+                        {"robot_name": robot_name, "subtask": subtask_handle}
+                    )
+            return
+
+        # ── Failure path — trigger replan ─────────────────────────────
+        self.logger.warning(
+            f"[FAILURE] task_id={task_id}  robot={robot_name}  "
+            f"subtask={subtask_handle}"
+        )
+
+        # Replan guard — prevent infinite loops
+        with self._replan_lock:
+            count = self._replan_counts.get(task_id, 0)
+            if count >= self.MAX_REPLAN_PER_TASK:
+                self.logger.error(
+                    f"[GIVE UP] task_id={task_id} replanned {count} times. "
+                    f"Abandoning: {subtask_handle}"
+                )
+                return
+            self._replan_counts[task_id] = count + 1
+
+        # Gather context
+        with self._registry_lock:
+            reg = self._task_registry.get(task_id, {})
+        original_task = reg.get("original_task", subtask_handle)
+        completed_subtasks = reg.get("completed_subtasks", [])
+
+        replan_attempt = count + 1
+        self.logger.warning(
+            f"[REPLAN #{replan_attempt}/{self.MAX_REPLAN_PER_TASK}] "
+            f"task_id={task_id}  failed_skill="
+            f"{(failure_info or {}).get('failed_step', {}).get('tool_name', '?')}"
+        )
+
+        # Launch replan in a daemon thread — never blocks the listener.
+        threading.Thread(
+            target=self._do_replan,
+            args=(
+                task_id,
+                original_task,
+                subtask_handle,
+                robot_name,
+                failure_info or {},
+                completed_subtasks,
+                replan_attempt,
+            ),
+            daemon=True,
+            name=f"replan_{task_id}_{replan_attempt}",
+        ).start()
+
+    # ------------------------------------------------------------------
+    # Replan execution (runs in its own thread)
+    # ------------------------------------------------------------------
+
+    def _do_replan(
+        self,
+        task_id: str,
+        original_task: str,
+        failed_subtask: str,
+        failed_robot: str,
+        failure_info: dict,
+        completed_subtasks: list,
+        replan_attempt: int,
+    ):
+        """Build a repair prompt, call planner, and dispatch new subtasks."""
+        try:
+            # 1. Call planner with repair context
+            response = self.planner.repair_forward(
+                original_task=original_task,
+                failed_subtask=failed_subtask,
+                failed_robot=failed_robot,
+                failure_info=failure_info,
+                completed_subtasks=completed_subtasks,
+                replan_attempt=replan_attempt,
+            )
+
+            # 2. Extract JSON plan from response
+            reasoning_and_subtasks = self._extract_json(response)
+
+            # Retry if extraction fails
+            attempt = 0
+            while (
+                not self.reasoning_and_subtasks_is_right(reasoning_and_subtasks)
+            ) and (attempt < self.config["model"]["model_retry_planning"]):
+                self.logger.warning(
+                    f"[REPLAN] JSON extraction failed, retry {attempt + 1}"
+                )
+                response = self.planner.repair_forward(
+                    original_task=original_task,
+                    failed_subtask=failed_subtask,
+                    failed_robot=failed_robot,
+                    failure_info=failure_info,
+                    completed_subtasks=completed_subtasks,
+                    replan_attempt=replan_attempt,
+                )
+                reasoning_and_subtasks = self._extract_json(response)
+                attempt += 1
+
+            if reasoning_and_subtasks is None:
+                self.logger.error(
+                    f"[REPLAN FAILED] Could not get valid repair plan "
+                    f"for task_id={task_id}"
+                )
+                return
+
+            self.logger.info(
+                f"[REPLAN] New plan:\n"
+                f"{json.dumps(reasoning_and_subtasks, indent=2, ensure_ascii=False)}"
+            )
+
+            # 3. Dispatch the repaired subtasks
+            subtask_list = reasoning_and_subtasks.get("subtask_list", [])
+            grouped_tasks = self._group_tasks_by_order(subtask_list)
+
+            asyncio.run(
+                self._dispath_subtasks_async(
+                    original_task, task_id, grouped_tasks, refresh=True
+                )
+            )
+
+        except Exception as e:
+            self.logger.error(
+                f"[REPLAN ERROR] task_id={task_id}: {e}", exc_info=True
             )
 
     def _extract_json(self, input_string):
-        """Extract JSON from a string."""
+        """Extract JSON from a string (supports markdown fences and raw JSON)."""
         try:
-            # Try to find markdown code block first
+            # Try markdown code block first
             start_marker = "```json"
             end_marker = "```"
             start_idx = input_string.find(start_marker)
             if start_idx != -1:
-                end_idx = input_string.find(end_marker, start_idx + len(start_marker))
+                end_idx = input_string.find(
+                    end_marker, start_idx + len(start_marker)
+                )
                 if end_idx != -1:
-                    json_str = input_string[start_idx + len(start_marker) : end_idx].strip()
+                    json_str = input_string[
+                        start_idx + len(start_marker) : end_idx
+                    ].strip()
                     return json.loads(json_str)
 
-            # Fallback: try to find JSON object directly
+            # Fallback: find raw JSON object
             start_idx = input_string.find("{")
             end_idx = input_string.rfind("}")
             if start_idx != -1 and end_idx != -1:
                 json_str = input_string[start_idx : end_idx + 1]
                 return json.loads(json_str)
 
-            self.logger.warning("[WARNING] JSON markers/object not found in the string.")
+            self.logger.warning(
+                "[WARNING] JSON markers/object not found in the string."
+            )
             return None
         except json.JSONDecodeError as e:
             self.logger.warning(
@@ -156,218 +337,6 @@ class GlobalAgent:
         for task in tasks:
             grouped[int(task.get("subtask_order", 0))].append(task)
         return dict(sorted(grouped.items()))
-
-    @staticmethod
-    def _normalize_task_text(task: str) -> str:
-        if not isinstance(task, str):
-            return ""
-        return " ".join(task.strip().lower().split())
-
-    def _is_pick_bottle_atomic_task(self, task: str) -> bool:
-        text = self._normalize_task_text(task)
-        if not text:
-            return False
-
-        fixed_aliases = {
-            "pick bottle and place into box",
-            "pick bottle and place it into box",
-            "pick bottle and place in box",
-            "pick_bottle_and_place_into_box",
-            "抓瓶子放进箱子",
-            "抓瓶子放到箱子",
-        }
-        if text in fixed_aliases:
-            return True
-
-        return (
-            ("pick" in text or "grab" in text)
-            and "bottle" in text
-            and ("place" in text or "put" in text)
-            and "box" in text
-        )
-
-    def _is_atomic_manipulation_task(self, task: str) -> bool:
-        """Conservative heuristic for single-object pick-and-place intents."""
-        text = self._normalize_task_text(task)
-        if not text:
-            return False
-
-        if "execute_manipulation_task" in text:
-            return True
-
-        semantic_text = text.replace("_", " ")
-
-        # Avoid over-triggering for non-manipulation requests that include generic words like "take" or "move".
-        non_manipulation_keywords = (
-            "photo",
-            "image",
-            "video",
-            "report",
-            "status",
-            "health",
-            "diagnose",
-            "diagnostic",
-            "inspect",
-            "startup",
-            "shutdown",
-            "service",
-            "log",
-            "连接测试",
-            "状态",
-            "健康检查",
-            "诊断",
-            "巡检",
-            "日志",
-            "启动",
-            "停止服务",
-        )
-        if any(keyword in semantic_text for keyword in non_manipulation_keywords):
-            return False
-
-        en_pick_pattern = r"\b(pick|grab|grasp|take|lift)\b"
-        en_place_pattern = r"\b(place|put|set|drop)\b"
-        has_en_pick_and_place = bool(
-            re.search(en_pick_pattern, semantic_text)
-            and re.search(en_place_pattern, semantic_text)
-        )
-        has_en_destination = any(
-            marker in f" {semantic_text} "
-            for marker in (" into ", " onto ", " in ", " on ", " to ")
-        )
-
-        cn_pick_verbs = ("抓", "拿", "取", "提")
-        cn_place_verbs = ("放", "摆", "置")
-        cn_destination_markers = ("放到", "放进", "放在", "放入", "放至", "到", "至")
-        has_cn_pick_and_place = any(v in text for v in cn_pick_verbs) and any(
-            v in text for v in cn_place_verbs
-        )
-        has_cn_destination = any(marker in text for marker in cn_destination_markers)
-
-        return (has_en_pick_and_place and has_en_destination) or (
-            has_cn_pick_and_place and has_cn_destination
-        )
-
-    @staticmethod
-    def _extract_tool_names(robot_info: Any) -> set[str]:
-        if isinstance(robot_info, str):
-            try:
-                robot_info = json.loads(robot_info)
-            except Exception:
-                return set()
-        if not isinstance(robot_info, dict):
-            return set()
-
-        out: set[str] = set()
-        for tool in robot_info.get("robot_tool", []) or []:
-            if isinstance(tool, dict):
-                func = tool.get("function", {})
-                if isinstance(func, dict):
-                    name = func.get("name")
-                    if isinstance(name, str) and name.strip():
-                        out.add(name.strip())
-                name = tool.get("name")
-                if isinstance(name, str) and name.strip():
-                    out.add(name.strip())
-        return out
-
-    def _select_robot_for_tool(self, tool_name: str) -> str | None:
-        all_agents_info = self.collaborator.read_all_agents_info() or {}
-        candidates = []
-        for robot_name, raw_info in all_agents_info.items():
-            tools = self._extract_tool_names(raw_info)
-            if tool_name in tools:
-                candidates.append(robot_name)
-
-        if not candidates:
-            return None
-
-        # Prioritize the GR2 robot naming convention, then lexicographic fallback.
-        for preferred in ("fourier_gr2", "gr2"):
-            if preferred in candidates:
-                return preferred
-        return sorted(candidates)[0]
-
-    def _select_default_robot(self) -> str | None:
-        robots = self.collaborator.read_all_agents_name() or []
-        if not robots:
-            return None
-        for preferred in ("fourier_gr2", "gr2"):
-            if preferred in robots:
-                return preferred
-        return sorted(robots)[0]
-
-    def _build_direct_subtask_plan(self, task: str) -> Dict | None:
-        task_text = task.strip() if isinstance(task, str) else ""
-        if not task_text:
-            return None
-
-        # DISABLED: Atomic manipulation routing - force VLM decomposition for bottle task
-        # # Preferred atomic tool for end-to-end manipulation.
-        # execute_tool = "execute_manipulation_task"
-        # execute_robot = self._select_robot_for_tool(execute_tool)
-        # if execute_robot and self._is_atomic_manipulation_task(task_text):
-        #     plan = {
-        #         "reasoning_explanation": (
-        #             "Task matched atomic manipulation routing. "
-        #             "Dispatch a single end-to-end subtask to execute_manipulation_task."
-        #         ),
-        #         "subtask_list": [
-        #             {
-        #                 "robot_name": execute_robot,
-        #                 "subtask": f"{execute_tool}: {task_text}",
-        #                 "subtask_order": 1,
-        #             }
-        #         ],
-        #     }
-        #     self.logger.info("[ROUTER] Using atomic execute routing for task '%s': %s", task, plan)
-        #     return plan
-
-        # DISABLED: Fallback atomic routing - force VLM decomposition for bottle task
-        # # Fallback: still keep the task atomic (single subtask), avoid planner decomposition/empty plans.
-        # if self._is_atomic_manipulation_task(task_text):
-        #     fallback_robot = self._select_default_robot()
-        #     if fallback_robot:
-        #         plan = {
-        #             "reasoning_explanation": (
-        #                 "Task matched atomic manipulation intent. "
-        #                 "execute_manipulation_task is not registered, so dispatch one direct subtask to a robot."
-        #             ),
-        #             "subtask_list": [
-        #                 {
-        #                     "robot_name": fallback_robot,
-        #                     "subtask": task_text,
-        #                     "subtask_order": 1,
-        #                 }
-        #             ],
-        #         }
-        #         self.logger.info(
-        #             "[ROUTER] Using atomic direct fallback for task '%s': %s", task, plan
-        #         )
-        #         return plan
-
-        # DISABLED: Backward-compatible fallback for older single-purpose pick tool
-        # # Backward-compatible fallback for older single-purpose pick tool.
-        # if self._is_pick_bottle_atomic_task(task_text):
-        #     tool_name = "pick_bottle_and_place_into_box"
-        #     robot_name = self._select_robot_for_tool(tool_name)
-        #     if robot_name:
-        #         plan = {
-        #             "reasoning_explanation": (
-        #                 "Task matched atomic GR2 pick-bottle skill. "
-        #                 "Use only one executable subtask to avoid unsupported decomposition."
-        #             ),
-        #             "subtask_list": [
-        #                 {
-        #                     "robot_name": robot_name,
-        #                     "subtask": tool_name,
-        #                     "subtask_order": 1,
-        #                 }
-        #             ],
-        #         }
-        #         self.logger.info("[ROUTER] Using atomic fallback routing for task '%s': %s", task, plan)
-        #         return plan
-
-        return None
 
     def _start_listener(self):
         """Start listen in a background thread."""
@@ -421,45 +390,87 @@ class GlobalAgent:
             return False
 
     def publish_global_task(self, task: str, refresh: bool, task_id: str) -> Dict:
-        """Publish a global task to all Agents"""
+        """Publish a global task to all Agents.
+
+        If the task already contains an explicit skill sequence
+        ("Execute the following skills strictly in order: ..."), it is sent
+        directly to the first available robot WITHOUT going through the LLM
+        planner. This guarantees the skill sequence arrives at the slaver
+        intact, regardless of LLM rewriting behaviour.
+        """
         self.logger.info(f"Publishing global task: {task}")
 
-        reasoning_and_subtasks = self._build_direct_subtask_plan(task)
-        if reasoning_and_subtasks is None:
+        task_id = task_id or str(uuid.uuid4()).replace("-", "")
+
+        # Register the root task for replan tracking.
+        with self._registry_lock:
+            if task_id not in self._task_registry:
+                self._task_registry[task_id] = {
+                    "original_task": task,
+                    "completed_subtasks": [],
+                }
+
+        # --- Fast path: task already has a skill sequence → skip planner ---
+        if isinstance(task, str) and _HAS_SKILL_SEQUENCE.search(task):
+            self.logger.info(
+                "[DIRECT DISPATCH] Task contains explicit skill sequence, "
+                "bypassing LLM planner."
+            )
+            # Pick the first registered robot
+            all_robots = self.collaborator.read_all_agents_name()
+            robot_name = all_robots[0] if all_robots else "gr2_robot"
+
+            reasoning_and_subtasks = {
+                "reasoning_explanation":
+                    "Task contains an explicit skill sequence. "
+                    "Bypassing LLM planner and dispatching directly.",
+                "subtask_list": [
+                    {
+                        "robot_name": robot_name,
+                        "subtask": task,
+                        "subtask_order": 1,
+                    }
+                ],
+            }
+            grouped_tasks = self._group_tasks_by_order(
+                reasoning_and_subtasks["subtask_list"]
+            )
+            threading.Thread(
+                target=asyncio.run,
+                args=(self._dispath_subtasks_async(
+                    task, task_id, grouped_tasks, refresh),),
+                daemon=True,
+            ).start()
+            return reasoning_and_subtasks
+
+        # --- Normal path: LLM planner decomposes the task ---
+        response = self.planner.forward(task)
+        reasoning_and_subtasks = self._extract_json(response)
+
+        # Retry if JSON extraction fails
+        attempt = 0
+        while (not self.reasoning_and_subtasks_is_right(reasoning_and_subtasks)) and (
+            attempt < self.config["model"]["model_retry_planning"]
+        ):
+            self.logger.warning(
+                f"Attempt {attempt + 1} to extract JSON failed. Retrying..."
+            )
             response = self.planner.forward(task)
             reasoning_and_subtasks = self._extract_json(response)
-
-            # Retry if JSON extraction fails
-            attempt = 0
-            while (not self.reasoning_and_subtasks_is_right(reasoning_and_subtasks)) and (
-                attempt < self.config["model"]["model_retry_planning"]
-            ):
-                self.logger.warning(
-                    f"[WARNING] JSON extraction failed after {self.config['model']['model_retry_planning']} attempts."
-                )
-                self.logger.error(
-                    f"[ERROR] Task ({task}) failed to be decomposed into subtasks, it will be ignored."
-                )
-                self.logger.warning(
-                    f"Attempt {attempt + 1} to extract JSON failed. Retrying..."
-                )
-                response = self.planner.forward(task)
-                reasoning_and_subtasks = self._extract_json(response)
-                attempt += 1
-
-        self.logger.info(f"Received reasoning and subtasks:\n{reasoning_and_subtasks}")
+            attempt += 1
 
         if reasoning_and_subtasks is None:
-            self.logger.error("[ERROR] Failed to obtain valid JSON plan from model.")
+            self.logger.error(
+                "[ERROR] Failed to obtain valid JSON plan from model."
+            )
             return {
-                "reasoning_explanation": "Failed to decompose task: Model output invalid or empty.",
-                "subtask_list": []
+                "reasoning_explanation": "Failed to decompose task.",
+                "subtask_list": [],
             }
 
+        self.logger.info(f"Received reasoning and subtasks:\n{reasoning_and_subtasks}")
         subtask_list = reasoning_and_subtasks.get("subtask_list", [])
         grouped_tasks = self._group_tasks_by_order(subtask_list)
-
-        task_id = task_id or str(uuid.uuid4()).replace("-", "")
 
         threading.Thread(
             target=asyncio.run,

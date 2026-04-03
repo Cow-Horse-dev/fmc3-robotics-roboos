@@ -628,6 +628,43 @@
             display: none;
         }
 
+        /* Workflow task selector */
+        .workflow-panel {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-bottom: 1rem;
+        }
+
+        .workflow-task {
+            background: rgba(5, 9, 15, 0.6);
+            border: 1px solid rgba(0, 240, 255, 0.15);
+            border-radius: 6px;
+            padding: 10px 12px;
+            cursor: pointer;
+            transition: all 0.25s ease;
+            text-align: left;
+        }
+
+        .workflow-task:hover {
+            background: rgba(0, 240, 255, 0.08);
+            border-color: rgba(0, 240, 255, 0.4);
+            box-shadow: 0 0 12px rgba(0, 240, 255, 0.15);
+        }
+
+        .workflow-task.selected {
+            background: rgba(0, 240, 255, 0.12);
+            border-color: var(--primary);
+            box-shadow: 0 0 15px rgba(0, 240, 255, 0.2);
+        }
+
+        .workflow-task .step-desc {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1.3;
+        }
+
         .task-media-preview {
             margin-top: 20px;
             background: #1e1e2f;
@@ -695,9 +732,15 @@
                     <div id="connection-status">Connection Status: Not connected</div>
                 </div>
 
+                <!-- Workflow Task Selector -->
+                <div class="api-section">
+                    <h3><i class="fas fa-list-ol"></i> Hikvision Inspection Workflow</h3>
+                    <div class="workflow-panel" id="workflow-panel"></div>
+                </div>
+
                 <!-- Message Composition -->
                 <div class="api-section">
-                    <textarea id="message" rows="4" placeholder="Enter your message here..."
+                    <textarea id="message" rows="4" placeholder="Select a workflow step above or enter a custom task..."
                         style="font-size: 25px;" onkeydown="handleKeyPress(event)"></textarea>
                     <div class="button-group">
                         <button onclick="sendMessage()" class="api-button primary">Send Message</button>
@@ -724,14 +767,6 @@
                 <div id="robot-list">
                 </div>
             </div>
-
-            <div class="status-card">
-                <h3><i class="fas fa-exclamation-triangle"></i> Emergency Control</h3>
-                <button id="emergency-stop" class="api-button" style="width: 100%; margin-bottom: 10px; background-color: #ff0000; border-color: #cc0000; color: white; font-weight: bold; font-size: 1.1rem; box-shadow: 0 0 10px rgba(255,0,0,0.5); animation: pulse 2s infinite;">
-                    <i class="fas fa-hand-paper"></i> EMERGENCY STOP / 立即急停
-                </button>
-            </div>
-
             <div class="status-card system-status">
                 <h3><i class="fas fa-chart-line"></i> system state</h3>
 
@@ -1130,63 +1165,101 @@
             }
         }
 
-        document.addEventListener('DOMContentLoaded', async () => {
-            console.log('页面加载完成，获取机器人状态并显示第一个任务');
-            const robotData = await fetchRobotStatus();
+        // ── Workflow task definitions (9 steps) ──────────────────────────
+        const WORKFLOW_STEPS = [
+            {
+                step: 1,
+                desc: "Pick up camera from transfer box",
+                skills: "visual_localize, plan_path, move_to_position, open_hand, precision_pinch, force_controlled_grasp, lift_object",
+                codes: "P1 \u2192 M4 \u2192 M1 \u2192 G1 \u2192 G2 \u2192 G3 \u2192 G4"
+            },
+            {
+                step: 2,
+                desc: "Remove lens cap + visual inspection",
+                skills: "hand_transfer, visual_localize, move_to_position, precision_pinch, lens_cap_operation, place_object, set_orientation, visual_inspect",
+                codes: "C1 \u2192 P1 \u2192 M1 \u2192 G2 \u2192 O3 \u2192 O1 \u2192 M3 \u2192 P2"
+            },
+            {
+                step: 3,
+                desc: "Scan QR code",
+                skills: "bimanual_sync_move, set_orientation, move_to_position, fine_align, qr_code_recognize, wait_for_signal",
+                codes: "M2 \u2192 M3 \u2192 M1 \u2192 O4 \u2192 P3 \u2192 I1"
+            },
+            {
+                step: 4,
+                desc: "Place camera into fixture (lens up)",
+                skills: "set_orientation, visual_localize, plan_path, move_to_position, fine_align, place_object",
+                codes: "M3 \u2192 P1 \u2192 M4 \u2192 M1 \u2192 O4 \u2192 O1"
+            },
+            {
+                step: 5,
+                desc: "Press start buttons, wait for test",
+                skills: "visual_localize, bimanual_sync_move, press_dual_buttons, wait_for_signal",
+                codes: "P1 \u2192 M2 \u2192 O2 \u2192 I1"
+            },
+            {
+                step: 6,
+                desc: "Remove camera + re-inspect lens",
+                skills: "move_to_position, precision_pinch, lift_object, set_orientation, visual_inspect",
+                codes: "M1 \u2192 G2 \u2192 G4 \u2192 M3 \u2192 P2"
+            },
+            {
+                step: 7,
+                desc: "Replace lens cap",
+                skills: "visual_localize, move_to_position, precision_pinch, lens_cap_operation, place_object",
+                codes: "P1 \u2192 M1 \u2192 G2 \u2192 O3 \u2192 O1"
+            },
+            {
+                step: 8,
+                desc: "Stack camera into transfer box",
+                skills: "visual_localize, plan_path, set_orientation, fine_align, place_object",
+                codes: "P1 \u2192 M4 \u2192 M3 \u2192 O4 \u2192 O1"
+            },
+            {
+                step: 9,
+                desc: "Read airtightness result on screen",
+                skills: "visual_localize, read_screen_result, visual_inspect",
+                codes: "P1 \u2192 P4 \u2192 P2"
+            }
+        ];
 
+        function buildWorkflowMessage(item) {
+            return `Step ${item.step}: ${item.desc}\n` +
+                   `Execute the following skills strictly in order: ${item.skills}`;
+        }
+
+        function renderWorkflowPanel() {
+            const panel = document.getElementById('workflow-panel');
+            panel.innerHTML = '';
+            WORKFLOW_STEPS.forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'workflow-task';
+                card.setAttribute('data-step', item.step);
+                card.innerHTML = `
+                    <div class="step-desc">${item.desc}</div>
+                `;
+                card.addEventListener('click', () => {
+                    document.querySelectorAll('.workflow-task').forEach(c => c.classList.remove('selected'));
+                    card.classList.add('selected');
+                    document.getElementById('message').value = buildWorkflowMessage(item);
+                });
+                panel.appendChild(card);
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            renderWorkflowPanel();
+
+            const robotData = await fetchRobotStatus();
             if (robotData.length > 0) {
                 showRobotTask(robotData[0].robot_name);
-            } else {
-                console.warn('没有机器人数据，无法显示任务');
             }
 
-            const socket = io('http://localhost:5000');
+            const protocol = window.location.protocol;
+            const hostname = window.location.hostname;
+            const socket = io(`${protocol}//${hostname}:5000`);
             socket.on("text_update", (data) => {
-                document.getElementById("message").value = data.data
-            })
-
-            // Emergency STOP Logic (New Feature)
-            document.getElementById('emergency-stop').addEventListener('click', async function() {
-                if (!confirm('⚠️ 紧急操作确认 / EMERGENCY CONFIRMATION ⚠️\n\nThis will IMMEDIATELY interrupt all running tasks and stop the robot.\n这将立即中断所有正在运行的任务并停止机器人。\n\nAre you sure? / 确认执行?')) {
-                    return;
-                }
-
-                const btn = this;
-                const originalText = btn.innerHTML;
-                const responseElement = document.getElementById('server-response');
-
-                try {
-                    btn.disabled = true;
-                    btn.innerHTML = '<i class="fas fa-radiation fa-spin"></i> STOPPING...';
-
-                    // Visual feedback immediately
-                    document.body.style.boxShadow = "inset 0 0 50px red";
-                    setTimeout(() => document.body.style.boxShadow = "", 500);
-
-                    responseElement.innerHTML = '<span style="color: #ff0000; font-weight: bold; font-size: 1.2em;">🚨 SENDING EMERGENCY STOP SIGNAL...</span>';
-
-                    const response = await fetch('/api/estop', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ robot_name: "all" })
-                    });
-
-                    const result = await response.json();
-
-                    if (result.success) {
-                        responseElement.innerHTML = `<span style="color: #ff0000; font-weight: bold;">🛑 [EMERGENCY STOP] EXECUTED: ${result.message}</span>`;
-                        alert('🛑 STOP SIGNAL SENT! / 急停信号已发送!');
-                    } else {
-                        throw new Error(result.message);
-                    }
-                } catch (error) {
-                    console.error('E-Stop failed:', error);
-                    alert(`E-Stop failed: ${error.message}`);
-                    responseElement.innerHTML = `<span style="color: var(--danger);">❌ [E-STOP FAILED]: ${error.message}</span>`;
-                } finally {
-                    btn.disabled = false;
-                    btn.innerHTML = originalText;
-                }
+                document.getElementById("message").value = data.data;
             });
         });
     </script>

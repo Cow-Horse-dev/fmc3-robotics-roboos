@@ -280,6 +280,9 @@ class SceneMemory:
                 else:
                     print("[Scene Update] Missing `target` for position")
 
+            elif "none" in action_type:
+                pass  # No scene state change (e.g. inspect, wait, press, align)
+
             else:
                 print(f"[Scene Update] Unknown action `{action_type}`")
         except Exception as e:
@@ -292,9 +295,10 @@ You are a robot task planner responsible for updating a symbolic scene memory.
 
 Each tool the robot calls has a side effect on the world, which can be one of the following **scene-level action types**:
 
-- `add_object`: An object that was previously not in the environment (e.g., held by the robot) is placed back into the environment, like placing an apple into a basket.
-- `remove_object`: An object is taken out of the environment (e.g., from a table) and held by the robot, such as grasping or picking up something.
-- `position`: The environment is not changed; the robot itself may move (e.g., navigation), but no object is added, removed, or moved.
+- `add_object`: An object that was previously not in the environment (e.g., held by the robot) is placed back into the environment, like placing a camera into a box or a lens cap onto a fixture area.
+- `remove_object`: An object is taken out of the environment (e.g., from a container or workstation) and held by the robot, such as picking up a camera or removing a lens cap.
+- `position`: The robot or its arms move to a new location, but no object is added or removed from the environment (e.g., move_to_position, bimanual_sync_move, plan_path, set_orientation, fine_align).
+- `none`: The tool call has no effect on scene state — it is a perception, inspection, synchronization, or wait action (e.g., visual_localize, visual_inspect, qr_code_recognize, read_screen_result, press_dual_buttons, wait_for_signal, open_hand, lift_object).
 
 ---
 
@@ -307,7 +311,7 @@ Result: {memory_input['result']}
 ---
 
 Answer strictly with one of the following:
-[add_object, remove_object, position]
+[add_object, remove_object, position, none]
 
 Answer with only one action type from the list above. Do not include any explanation.
 """

@@ -21,6 +21,7 @@ importlib.import_module("tools.memory")
 
 from agents.models import AzureOpenAIServerModel, OpenAIServerModel
 from agents.slaver_agent import ToolCallingAgent
+from agents.skill_state_machine import SkillSequenceExecutor, parse_skill_sequence
 from flag_scale.flagscale.agent.collaboration import Collaborator
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -118,46 +119,127 @@ class RobotManager:
             future.result()
 
     async def _execute_task(self, task_data: Dict) -> None:
-        """Internal task execution logic"""
+        """Internal task execution logic.
+
+        If the task contains an explicit skill sequence
+        ("Execute the following skills strictly in order: ..."), use the
+        deterministic SkillSequenceExecutor with retry / rollback.
+        Otherwise fall back to the LLM-driven ReAct loop.
+        """
         if self._shutdown_event.is_set():
             return
 
         os.makedirs("./.log", exist_ok=True)
-        
-        # Use tool matcher to find relevant tools for the task
+
         task = task_data["task"]
-        matched_tools = self.tool_matcher.match_tools(task)
-        
-        # Filter tools based on matching results
-        if matched_tools:
-            matched_tool_names = [tool_name for tool_name, _ in matched_tools]
-            filtered_tools = [tool for tool in self.tools 
-                           if tool.get("function", {}).get("name") in matched_tool_names]
+
+        # --- Check for deterministic skill sequence ---
+        skill_names = parse_skill_sequence(task)
+
+        print(f"[DEBUG _execute_task] task text: {task!r}")
+        print(f"[DEBUG _execute_task] parse_skill_sequence result: {skill_names}")
+        print(f"[DEBUG _execute_task] path: {'STATE_MACHINE' if skill_names else 'REACT_LOOP'}")
+
+        if skill_names:
+            # ========== State-machine path ==========
+            executor = SkillSequenceExecutor(
+                tool_executor=self.session.call_tool,
+                tools=self.tools,
+                log_file="./.log/agent.log",
+            )
+            seq_result = await executor.execute(skill_names, task)
+
+            # Convert state-machine result to the format _send_result expects
+            if seq_result["status"] == "success":
+                result = "Mission accomplished"
+            else:
+                result = (
+                    f"Mission failed at skill '{seq_result.get('failed_skill', '?')}' "
+                    f"(completed {seq_result['completed_count']}/{seq_result['total_steps']})"
+                )
+
+            # Build tool_call list compatible with existing reporting
+            tool_call = [
+                {
+                    "tool_name": entry["skill_name"],
+                    "tool_arguments": json.dumps(entry["arguments"]),
+                }
+                for entry in seq_result["execution_log"]
+            ]
+
+            self._send_result(
+                robot_name=self.robot_name,
+                task=task,
+                task_id=task_data["task_id"],
+                result=result,
+                tool_call=tool_call,
+                failure_info=self._build_failure_info(seq_result)
+                if seq_result["status"] == "failed"
+                else None,
+            )
         else:
-            filtered_tools = self.tools
-        
-        agent = ToolCallingAgent(
-            tools=filtered_tools,
-            verbosity_level=2,
-            model=self.model,
-            model_path=self.model_path,
-            log_file="./.log/agent.log",
-            robot_name=self.robot_name,
-            collaborator=self.collaborator,
-            tool_executor=self.session.call_tool,
-        )
-        
-        result = await agent.run(task)
-        self._send_result(
-            robot_name=self.robot_name,
-            task=task,
-            task_id=task_data["task_id"],
-            result=result,
-            tool_call=agent.tool_call,
-        )
+            # ========== ReAct loop path (unchanged) ==========
+            matched_tools = self.tool_matcher.match_tools(task)
+
+            if matched_tools:
+                matched_tool_names = [tool_name for tool_name, _ in matched_tools]
+                filtered_tools = [
+                    tool
+                    for tool in self.tools
+                    if tool.get("function", {}).get("name") in matched_tool_names
+                ]
+            else:
+                filtered_tools = self.tools
+
+            agent = ToolCallingAgent(
+                tools=filtered_tools,
+                verbosity_level=2,
+                model=self.model,
+                model_path=self.model_path,
+                log_file="./.log/agent.log",
+                robot_name=self.robot_name,
+                collaborator=self.collaborator,
+                tool_executor=self.session.call_tool,
+            )
+
+            result = await agent.run(task)
+            self._send_result(
+                robot_name=self.robot_name,
+                task=task,
+                task_id=task_data["task_id"],
+                result=result,
+                tool_call=agent.tool_call,
+            )
+
+    @staticmethod
+    def _build_failure_info(seq_result: Dict) -> Dict:
+        """Build a failure_info dict from SkillSequenceExecutor result.
+
+        This is consumed by the master's _handle_result for replanning.
+        """
+        return {
+            "type": "skill_execution_failure",
+            "reason": seq_result.get("last_observation", "unknown"),
+            "completed_steps": seq_result.get("completed_skills", []),
+            "failed_step": {
+                "step": seq_result.get("failed_step_index"),
+                "tool_name": seq_result.get("failed_skill"),
+            },
+            "suggestion": (
+                f"Skill '{seq_result.get('failed_skill')}' failed after "
+                f"{seq_result.get('total_rollbacks', 0)} rollback(s). "
+                f"Consider alternative approach or manual intervention."
+            ),
+        }
 
     def _send_result(
-        self, robot_name: str, task: str, task_id: str, result: Dict, tool_call: List
+        self,
+        robot_name: str,
+        task: str,
+        task_id: str,
+        result: Dict,
+        tool_call: List,
+        failure_info: Optional[Dict] = None,
     ) -> None:
         """Send task results to collaboration channel"""
         if self._shutdown_event.is_set():
@@ -168,9 +250,12 @@ class RobotManager:
             "robot_name": robot_name,
             "subtask_handle": task,
             "subtask_result": result,
+            "subtask_status": "failure" if failure_info else "success",
             "tools": tool_call,
             "task_id": task_id,
         }
+        if failure_info:
+            payload["failure_info"] = failure_info
         self.collaborator.send(channel, json.dumps(payload))
 
     def _heartbeat_loop(self, robot_name) -> None:
