@@ -1,0 +1,91 @@
+flowchart TD
+    title["SkillSequenceExecutor 重试机制"]
+    style title fill:none,stroke:none,font-size:18px,font-weight:bold
+
+    %% === Attempt 1 ===
+    subgraph A1["第 1 次尝试"]
+        direction LR
+        A1_ready["就绪 (Ready)"]
+        A1_running["执行中 (Running)<br/>MCP: put_bottle_into_box()"]
+        A1_judge{"VisionMonitor<br/>(GPT-4o)<br/>场景判定"}
+        A1_failed["失败 (Failed)"]
+        A1_init["initialization()<br/>机械臂归位"]
+
+        A1_ready -->|开始| A1_running
+        A1_running -->|技能完成, 请求判定| A1_judge
+        A1_judge -->|"bottle_in_box==false<br/>判定失败"| A1_failed
+        A1_failed --> A1_init
+    end
+
+    %% === Attempt 2 ===
+    subgraph A2["第 2 次尝试"]
+        direction LR
+        A2_ready["就绪 (Ready)"]
+        A2_running["执行中 (Running)<br/>MCP: put_bottle_into_box()"]
+        A2_judge{"VisionMonitor<br/>(GPT-4o)<br/>场景判定"}
+        A2_failed["失败 (Failed)"]
+        A2_init["initialization()<br/>机械臂归位"]
+
+        A2_ready -->|开始| A2_running
+        A2_running -->|技能完成, 请求判定| A2_judge
+        A2_judge -->|"bottle_in_box==false<br/>判定失败"| A2_failed
+        A2_failed --> A2_init
+    end
+
+    %% === Attempt 3 (success path) ===
+    subgraph A3S["第 3 次尝试 (成功路径)"]
+        direction LR
+        A3S_ready["就绪 (Ready)"]
+        A3S_running["执行中 (Running)<br/>MCP: put_bottle_into_box()"]
+        A3S_judge{"VisionMonitor<br/>(GPT-4o)<br/>场景判定"}
+        A3S_finished["完成 (Finished)"]
+
+        A3S_ready -->|开始| A3S_running
+        A3S_running -->|技能完成, 请求判定| A3S_judge
+        A3S_judge -->|"bottle_in_box==true<br/>判定成功 ✓"| A3S_finished
+    end
+
+    %% === Attempt 3 (failure path) ===
+    subgraph A3F["第 3 次尝试 (失败路径 → 终止)"]
+        direction LR
+        A3F_ready["就绪 (Ready)"]
+        A3F_running["执行中 (Running)<br/>MCP: put_bottle_into_box()"]
+        A3F_judge{"VisionMonitor<br/>(GPT-4o)<br/>场景判定"}
+        A3F_stop["终止 (Stop)<br/>→ 发送 failure_info"]
+        A3F_init["initialization()<br/>安全复位"]
+
+        A3F_ready -->|开始| A3F_running
+        A3F_running -->|技能完成, 请求判定| A3F_judge
+        A3F_judge -->|"bottle_in_box==false<br/>连续 3 次失败"| A3F_stop
+        A3F_stop --> A3F_init
+    end
+
+    %% === Connections between attempts ===
+    A1_init -->|重试| A2_ready
+    A2_init -->|重试| A3S_ready
+    A2_init -.->|或| A3F_ready
+
+    %% === Styles ===
+    style A1_ready fill:#a8d8ea,stroke:#333
+    style A1_running fill:#fff3b0,stroke:#333
+    style A1_failed fill:#ffb3b3,stroke:#333
+    style A1_init fill:#e8daef,stroke:#333
+
+    style A2_ready fill:#a8d8ea,stroke:#333
+    style A2_running fill:#fff3b0,stroke:#333
+    style A2_failed fill:#ffb3b3,stroke:#333
+    style A2_init fill:#e8daef,stroke:#333
+
+    style A3S_ready fill:#a8d8ea,stroke:#333
+    style A3S_running fill:#fff3b0,stroke:#333
+    style A3S_finished fill:#b5e6b5,stroke:#333
+
+    style A3F_ready fill:#a8d8ea,stroke:#333
+    style A3F_running fill:#fff3b0,stroke:#333
+    style A3F_stop fill:#ff8080,stroke:#333,color:#fff
+    style A3F_init fill:#e8daef,stroke:#333
+
+    style A1_judge fill:#d4e6f1,stroke:#2980b9,stroke-width:2px
+    style A2_judge fill:#d4e6f1,stroke:#2980b9,stroke-width:2px
+    style A3S_judge fill:#d4e6f1,stroke:#2980b9,stroke-width:2px
+    style A3F_judge fill:#d4e6f1,stroke:#2980b9,stroke-width:2px

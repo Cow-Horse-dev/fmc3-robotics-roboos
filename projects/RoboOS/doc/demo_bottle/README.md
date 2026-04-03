@@ -42,10 +42,10 @@
 │  │       │                                                       │    │
 │  │       ▼  (每个子任务执行期间)                                   │    │
 │  │  VisionMonitor (vision_monitor.py)                             │    │
-│  │  ├── 每 5 秒: USB 摄像头抓帧 → Gemini 场景监控                │    │
+│  │  ├── 每 5 秒: USB 摄像头抓帧 → OpenAI 场景监控                │    │
 │  │  │   ├── 瓶子在不在盒子里? (bottle_in_box)                    │    │
 │  │  │   └── 瓶子在黄色纸上还是绿色纸上? (bottle_on_paper)        │    │
-│  │  └── Slaver 请求视觉判定 → 抓帧 → Gemini 判断 → 回传结果     │    │
+│  │  └── Slaver 请求视觉判定 → 抓帧 → OpenAI 判断 → 回传结果     │    │
 │  └──────────────────────────────────────────────────────────────┘    │
 │                         │                                            │
 │              Redis Pub/Sub: roboos_to_{robot_name}                   │
@@ -145,7 +145,7 @@ Slaver 使用 `SKILL_NAME_MAP` 将 Master 下发的内部名称映射到实际 M
 
 ### 成功/失败判定
 
-**技能返回值不作为判定依据。** 成功/失败完全由 Master 端 VisionMonitor (Gemini) 通过摄像头场景判断决定：
+**技能返回值不作为判定依据。** 成功/失败完全由 Master 端 VisionMonitor (OpenAI) 通过摄像头场景判断决定：
 
 | 技能 | 成功条件 (VisionMonitor) |
 |------|-------------------------|
@@ -219,7 +219,7 @@ Slaver                                   Master
   │   (put_bottle_into_box / ...)          │
   │                                        │
   ├── 写 Redis: vision_request:{robot}  ──→ 发现请求
-  │                                        ├── VisionMonitor 抓帧 → Gemini 判断
+  │                                        ├── VisionMonitor 抓帧 → OpenAI 判断
   │                                        ├── place_in: bottle_in_box==true → 成功
   │                                        ├── take_out: bottle_in_box==false → 成功
   │   轮询 ←── 写 Redis: vision_result:{robot}
@@ -230,9 +230,9 @@ Slaver                                   Master
 
 ---
 
-## Gemini 视觉判定 (VisionMonitor)
+## OpenAI 视觉判定 (VisionMonitor)
 
-VisionMonitor 是任务成功/失败的**唯一判定依据**。Slaver 执行完技能后，请求 Master 通过 top-view USB 摄像头 + Gemini 视觉能力判断场景状态，决定技能是否成功。
+VisionMonitor 是任务成功/失败的**唯一判定依据**。Slaver 执行完技能后，请求 Master 通过 top-view USB 摄像头 + OpenAI 视觉能力判断场景状态，决定技能是否成功。
 
 ### 判断场景
 
@@ -247,7 +247,7 @@ VisionMonitor 判断两种场景状态：
 
 VisionMonitor 在任务执行中有两个角色：
 
-1. **周期性场景监控** — 子任务执行期间，每 5 秒抓帧 + Gemini 判断，记录到事件日志
+1. **周期性场景监控** — 子任务执行期间，每 5 秒抓帧 + OpenAI 判断，记录到事件日志
 2. **技能结果判定** — Slaver 技能执行完毕后，请求 Master 做一次场景判定，决定 finished/failed
 
 ### 视觉判定协议
@@ -258,7 +258,7 @@ Slaver                                        Master
   ├── 写 Redis: vision_request:{robot}     ──→  轮询发现请求
   │   {"skill_name": "place_in", ...}           │
   │                                             ├── VisionMonitor 抓帧
-  │                                             ├── Gemini 判断场景状态
+  │                                             ├── OpenAI 判断场景状态
   │                                             ├── SKILL_SUCCESS_CRITERIA:
   │                                             │   place_in → bottle_in_box==true
   │                                             │   take_out → bottle_in_box==false
@@ -270,9 +270,9 @@ Slaver                                        Master
   └── failed  → retry (最多 3×)
 ```
 
-### Gemini 判断格式
+### OpenAI 判断格式
 
-每次调用返回 (强制 JSON 输出 `response_mime_type: application/json`)：
+每次调用返回 (强制 JSON 输出 `response_format: {"type": "json_object"}`)：
 
 ```json
 {
@@ -288,9 +288,10 @@ Slaver                                        Master
 ```yaml
 vision_monitor:
   enable: true                  # 是否启用视觉监控
-  camera_id: /dev/video6        # USB 摄像头设备 ID
-  api_key: "AIzaSy..."          # Google Gemini API key
-  model: "gemini-3-flash-preview"  # Gemini 视觉模型
+  camera_id: /dev/video4        # USB 摄像头设备 ID
+  api_key: "sk-proj-..."        # OpenAI API key
+  # base_url: "https://api.openai.com/v1"  # 可选: 自定义 API 端点
+  model: "gpt-4o"               # OpenAI 视觉模型
   interval_sec: 5.0             # 抓帧间隔 (秒)
   confidence_threshold: 0.7     # 置信度阈值 (低于此值假定成功)
 ```
@@ -298,7 +299,7 @@ vision_monitor:
 ### 依赖
 
 ```bash
-pip install google-genai pillow opencv-python
+pip install openai opencv-python
 ```
 
 ### 事件类型
@@ -315,7 +316,7 @@ pip install google-genai pillow opencv-python
 ### 容错
 
 - VisionMonitor 未启用 → 所有技能假定成功
-- Gemini API 调用失败 → 假定成功 (不因视觉服务故障阻断任务)
+- OpenAI API 调用失败 → 假定成功 (不因视觉服务故障阻断任务)
 - 置信度 < 0.7 → 假定成功 (不因低信心判断导致误判)
 - Slaver 等待视觉结果超时 (默认 30s) → 假定成功
 
@@ -331,8 +332,8 @@ pip install google-genai pillow opencv-python
 | `master/agents/agent.py` | 重写 | 新增 `parse_bottle_demo_task()` 确定性解析; 任务状态管理; 失败终止逻辑; 执行事件日志; VisionMonitor 集成; `_handle_vision_judgment_request()` 处理 Slaver 视觉判定请求; `SKILL_SUCCESS_CRITERIA` 定义各技能成功条件 |
 | `master/scene/profile.yaml` | 重写 | `desk` (contains: cup) + `box` (empty) |
 | `master/run.py` | 修改 | 新增 `/stop_task`, `/reset`, `/task_state` 端点; 任务状态校验; `/task_state` 返回执行事件日志 |
-| `master/agents/vision_monitor.py` | 新增 | Gemini 视觉监控: USB 摄像头抓帧 + 场景状态判断 (VisionMonitor, MonitorState, SceneState); 使用 `google-genai` SDK; `response_mime_type=application/json` 强制 JSON 输出 |
-| `master/config.yaml` | 修改 | 新增 `vision_monitor` 配置段 (camera_id=/dev/video6, api_key, model=gemini-3-flash-preview, interval_sec=5.0, confidence_threshold=0.7) |
+| `master/agents/vision_monitor.py` | 新增 | OpenAI 视觉监控: USB 摄像头抓帧 + 场景状态判断 (VisionMonitor, MonitorState, SceneState); 使用 `openai` SDK; `response_format={"type": "json_object"}` 强制 JSON 输出 |
+| `master/config.yaml` | 修改 | 新增 `vision_monitor` 配置段 (camera_id=/dev/video4, api_key, model=gpt-4o, interval_sec=5.0, confidence_threshold=0.7) |
 
 ### RoboSkill (fmc3-robotics-roboos)
 
@@ -577,7 +578,7 @@ scene:
 ## 待实现 (TODO)
 
 - [x] **Slaver 状态机集成** — `SkillSequenceExecutor` 实现确定性技能调度 + 3次重试 + initialization() 恢复 + 任务终止
-- [x] **VisionMonitor 视觉判定** — Gemini (gemini-3-flash-preview) + USB 摄像头, 作为技能成功/失败的唯一判定依据
+- [x] **VisionMonitor 视觉判定** — OpenAI (gpt-4o) + USB 摄像头, 作为技能成功/失败的唯一判定依据
 - [x] **Slaver ↔ Master 视觉判定协议** — 通过 Redis key-value (`vision_request` / `vision_result`) 实现 Slaver 请求判定 → Master 回传结果
 - [x] **SKILL_NAME_MAP** — Slaver 内部名 (place_in/take_out) 映射到新 RoboSkill MCP tool 名 (put_bottle_into_box/take_bottle_out_of_box)
 - [x] **新 RoboSkill Repo 对接** — 已对接 `fmc3-robotics-roboos` 项目的 MCP Skill Server

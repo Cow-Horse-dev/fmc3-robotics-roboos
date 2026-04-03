@@ -75,7 +75,7 @@ vision_monitor:
   # USB camera device ID (ls /dev/video* to find yours)
   camera_id: /dev/video0
   # OpenAI API key
-  api_key: "add key before execution"
+  api_key: "api_key_here"
   # Optional: custom base URL for OpenAI-compatible endpoints
   # base_url: "https://api.openai.com/v1"
   # Model name (must support vision, e.g. gpt-4o, gpt-4o-mini)

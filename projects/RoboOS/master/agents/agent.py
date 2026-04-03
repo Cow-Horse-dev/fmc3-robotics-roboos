@@ -44,6 +44,30 @@ _TAKE_THEN_PLACE_PATTERNS = [
     r"take.*out.*then.*place.*in",
 ]
 
+# ── Green-yellow scenario patterns ──
+_GREEN_TO_YELLOW_PATTERNS = [
+    r"绿.*到.*黄",
+    r"从.*绿.*移.*黄",
+    r"绿.*区.*黄.*区",
+    r"green.*to.*yellow",
+    r"move.*green.*yellow",
+]
+_YELLOW_TO_GREEN_PATTERNS = [
+    r"黄.*到.*绿",
+    r"从.*黄.*移.*绿",
+    r"黄.*区.*绿.*区",
+    r"yellow.*to.*green",
+    r"move.*yellow.*green",
+]
+_GREEN_YELLOW_THEN_YELLOW_GREEN_PATTERNS = [
+    r"先.*绿.*黄.*再.*黄.*绿",
+    r"green.*yellow.*then.*yellow.*green",
+]
+_YELLOW_GREEN_THEN_GREEN_YELLOW_PATTERNS = [
+    r"先.*黄.*绿.*再.*绿.*黄",
+    r"yellow.*green.*then.*green.*yellow",
+]
+
 
 def parse_bottle_demo_task(task: str, robot_name: str) -> Optional[Dict]:
     """Parse a bottle demo user command into a deterministic skill sequence.
@@ -72,7 +96,26 @@ def parse_bottle_demo_task(task: str, robot_name: str) -> Optional[Dict]:
                 "Sequence: take_out → initialization (return to init) → place_in.",
             )
 
-    # Check single commands
+    # Check green-yellow combined commands FIRST
+    for pattern in _GREEN_YELLOW_THEN_YELLOW_GREEN_PATTERNS:
+        if re.search(pattern, task_lower):
+            return _build_subtask_plan(
+                robot_name,
+                ["green_to_yellow", "initialization", "yellow_to_green"],
+                "User wants to move bottle green→yellow then yellow→green. "
+                "Sequence: green_to_yellow → initialization → yellow_to_green.",
+            )
+
+    for pattern in _YELLOW_GREEN_THEN_GREEN_YELLOW_PATTERNS:
+        if re.search(pattern, task_lower):
+            return _build_subtask_plan(
+                robot_name,
+                ["yellow_to_green", "initialization", "green_to_yellow"],
+                "User wants to move bottle yellow→green then green→yellow. "
+                "Sequence: yellow_to_green → initialization → green_to_yellow.",
+            )
+
+    # Check single commands — box scenario
     for pattern in _PLACE_IN_PATTERNS:
         if re.search(pattern, task_lower):
             return _build_subtask_plan(
@@ -87,6 +130,23 @@ def parse_bottle_demo_task(task: str, robot_name: str) -> Optional[Dict]:
                 robot_name,
                 ["take_out"],
                 "User wants to take the cup out of the box. Single skill: take_out.",
+            )
+
+    # Check single commands — green-yellow scenario
+    for pattern in _GREEN_TO_YELLOW_PATTERNS:
+        if re.search(pattern, task_lower):
+            return _build_subtask_plan(
+                robot_name,
+                ["green_to_yellow"],
+                "User wants to move bottle from green to yellow. Single skill: green_to_yellow.",
+            )
+
+    for pattern in _YELLOW_TO_GREEN_PATTERNS:
+        if re.search(pattern, task_lower):
+            return _build_subtask_plan(
+                robot_name,
+                ["yellow_to_green"],
+                "User wants to move bottle from yellow to green. Single skill: yellow_to_green.",
             )
 
     # Check for multi-step chain patterns (challenge goal: 3+ steps)
@@ -123,6 +183,10 @@ def _parse_chain_task(task: str) -> Optional[List[str]]:
                         chain.append("place_in")
                     elif re.search(r"拿出|取出|take_out|take out", part):
                         chain.append("take_out")
+                    elif re.search(r"绿.*黄|green.*yellow|green_to_yellow", part):
+                        chain.append("green_to_yellow")
+                    elif re.search(r"黄.*绿|yellow.*green|yellow_to_green", part):
+                        chain.append("yellow_to_green")
                     elif re.search(r"初始化|init", part):
                         chain.append("initialization")
                 if len(chain) >= 2:
@@ -552,8 +616,12 @@ class GlobalAgent:
 
     # Maps internal skill name → expected scene state for "success"
     SKILL_SUCCESS_CRITERIA = {
+        # Box scenario
         "place_in": lambda scene: scene.bottle_in_box is True,
         "take_out": lambda scene: scene.bottle_in_box is False,
+        # Green-yellow scenario
+        "green_to_yellow": lambda scene: scene.bottle_on_paper == "yellow",
+        "yellow_to_green": lambda scene: scene.bottle_on_paper == "green",
     }
 
     def _judge_skill_success(self, skill_name: str, scene: SceneState) -> tuple:

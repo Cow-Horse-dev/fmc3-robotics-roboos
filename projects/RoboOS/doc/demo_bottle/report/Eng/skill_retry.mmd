@@ -1,0 +1,91 @@
+flowchart TD
+    title["SkillSequenceExecutor: Retry & Recovery Mechanism"]
+    style title fill:none,stroke:none,font-size:18px,font-weight:bold
+
+    %% === Attempt 1 ===
+    subgraph A1["Attempt 1"]
+        direction LR
+        A1_ready["Ready"]
+        A1_running["Running<br/>MCP: put_bottle_into_box()"]
+        A1_judge{"VisionMonitor<br/>(GPT-4o)<br/>Scene Judgment"}
+        A1_failed["Failed"]
+        A1_init["initialization()<br/>Arm → init position"]
+
+        A1_ready -->|start| A1_running
+        A1_running -->|"skill done, request judgment"| A1_judge
+        A1_judge -->|"bottle_in_box==false<br/>FAILED"| A1_failed
+        A1_failed --> A1_init
+    end
+
+    %% === Attempt 2 ===
+    subgraph A2["Attempt 2"]
+        direction LR
+        A2_ready["Ready"]
+        A2_running["Running<br/>MCP: put_bottle_into_box()"]
+        A2_judge{"VisionMonitor<br/>(GPT-4o)<br/>Scene Judgment"}
+        A2_failed["Failed"]
+        A2_init["initialization()<br/>Arm → init position"]
+
+        A2_ready -->|start| A2_running
+        A2_running -->|"skill done, request judgment"| A2_judge
+        A2_judge -->|"bottle_in_box==false<br/>FAILED"| A2_failed
+        A2_failed --> A2_init
+    end
+
+    %% === Attempt 3 (success path) ===
+    subgraph A3S["Attempt 3 (Success Path)"]
+        direction LR
+        A3S_ready["Ready"]
+        A3S_running["Running<br/>MCP: put_bottle_into_box()"]
+        A3S_judge{"VisionMonitor<br/>(GPT-4o)<br/>Scene Judgment"}
+        A3S_finished["Finished"]
+
+        A3S_ready -->|start| A3S_running
+        A3S_running -->|"skill done, request judgment"| A3S_judge
+        A3S_judge -->|"bottle_in_box==true<br/>SUCCESS ✓"| A3S_finished
+    end
+
+    %% === Attempt 3 (failure path) ===
+    subgraph A3F["Attempt 3 (Failure Path → Terminate)"]
+        direction LR
+        A3F_ready["Ready"]
+        A3F_running["Running<br/>MCP: put_bottle_into_box()"]
+        A3F_judge{"VisionMonitor<br/>(GPT-4o)<br/>Scene Judgment"}
+        A3F_stop["Stop<br/>→ send failure_info"]
+        A3F_init["initialization()<br/>Safe reset"]
+
+        A3F_ready -->|start| A3F_running
+        A3F_running -->|"skill done, request judgment"| A3F_judge
+        A3F_judge -->|"bottle_in_box==false<br/>3 consecutive failures"| A3F_stop
+        A3F_stop --> A3F_init
+    end
+
+    %% === Connections between attempts ===
+    A1_init -->|retry| A2_ready
+    A2_init -->|retry| A3S_ready
+    A2_init -.->|or| A3F_ready
+
+    %% === Styles ===
+    style A1_ready fill:#a8d8ea,stroke:#333
+    style A1_running fill:#fff3b0,stroke:#333
+    style A1_failed fill:#ffb3b3,stroke:#333
+    style A1_init fill:#e8daef,stroke:#333
+
+    style A2_ready fill:#a8d8ea,stroke:#333
+    style A2_running fill:#fff3b0,stroke:#333
+    style A2_failed fill:#ffb3b3,stroke:#333
+    style A2_init fill:#e8daef,stroke:#333
+
+    style A3S_ready fill:#a8d8ea,stroke:#333
+    style A3S_running fill:#fff3b0,stroke:#333
+    style A3S_finished fill:#b5e6b5,stroke:#333
+
+    style A3F_ready fill:#a8d8ea,stroke:#333
+    style A3F_running fill:#fff3b0,stroke:#333
+    style A3F_stop fill:#ff8080,stroke:#333,color:#fff
+    style A3F_init fill:#e8daef,stroke:#333
+
+    style A1_judge fill:#d4e6f1,stroke:#2980b9,stroke-width:2px
+    style A2_judge fill:#d4e6f1,stroke:#2980b9,stroke-width:2px
+    style A3S_judge fill:#d4e6f1,stroke:#2980b9,stroke-width:2px
+    style A3F_judge fill:#d4e6f1,stroke:#2980b9,stroke-width:2px

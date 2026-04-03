@@ -15,7 +15,13 @@ from flag_scale.flagscale.agent.collaboration import Collaborator
 from openai import AzureOpenAI, OpenAI
 
 # 合法意图白名单
-VALID_INTENTS = {"PUT", "TAKE", "PUT_THEN_TAKE", "TAKE_THEN_PUT"}
+VALID_INTENTS = {
+    # Box scenario
+    "PUT", "TAKE", "PUT_THEN_TAKE", "TAKE_THEN_PUT",
+    # Green-yellow scenario
+    "GREEN_TO_YELLOW", "YELLOW_TO_GREEN",
+    "GREEN_YELLOW_THEN_YELLOW_GREEN", "YELLOW_GREEN_THEN_GREEN_YELLOW",
+}
 
 
 class GlobalTaskPlanner:

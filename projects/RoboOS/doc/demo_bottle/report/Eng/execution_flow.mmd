@@ -1,0 +1,108 @@
+sequenceDiagram
+    title End-to-End Execution Flow: "Put in then Take out"
+
+    participant U as User
+    participant M as Master
+    participant VM as VisionMonitor<br/>(OpenAI GPT-4o)
+    participant R as Redis
+    participant S as Slaver
+    participant SK as RoboSkill
+
+    U->>M: POST /publish_task<br/>{"task": "put in then take out"}
+    activate M
+
+    Note over M: parse_bottle_demo_task()<br/>regex match → [place_in, init, take_out]
+
+    Note over M: task_state = running
+
+    %% === Subtask 1: place_in ===
+    rect rgb(232, 245, 253)
+        Note over M,SK: Subtask 1/3: place_in
+
+        M->>VM: Start monitor thread
+        activate VM
+        M->>R: publish roboos_to_gr2<br/>{"task": "place_in"}
+        R->>S: Receive subtask
+        activate S
+
+        S->>SK: MCP call_tool("put_bottle_into_box")
+        activate SK
+
+        loop Every 5 seconds
+            VM->>VM: CV2 capture → base64 JPEG<br/>→ GPT-4o scene judgment
+            Note over VM: {"bottle_in_box": false,<br/>"confidence": 0.91, ...}
+        end
+
+        SK-->>S: Return result (logging only, not used for judgment)
+        deactivate SK
+
+        Note over S: Skill execution done,<br/>request vision judgment
+
+        S->>R: Write vision_request:gr2<br/>{"skill_name": "place_in"}
+        R->>M: Polling detects request
+        M->>VM: judge_final_state("place_in")
+        VM->>VM: Capture frame → GPT-4o judgment
+        VM-->>M: SceneState<br/>{bottle_in_box: true, confidence: 0.95}
+        Note over M: SKILL_SUCCESS_CRITERIA:<br/>place_in → bottle_in_box==true → SUCCESS
+        M->>R: Write vision_result:gr2<br/>{"success": true, "reason": "..."}
+        R->>S: Polling reads result
+        Note over S: success → skill_state = finished
+
+        S->>R: Report result<br/>skill_state: "finished"
+        deactivate S
+        R->>M: Receive result
+
+        M->>VM: Stop monitor
+        deactivate VM
+    end
+
+    %% === Subtask 2: initialization ===
+    rect rgb(255, 248, 230)
+        Note over M,SK: Subtask 2/3: initialization (arm reset)
+
+        M->>R: publish roboos_to_gr2<br/>{"task": "initialization"}
+        R->>S: Receive subtask
+        activate S
+        S->>SK: MCP call_tool("stop_task")
+        activate SK
+        SK-->>S: Arm returned to init position
+        deactivate SK
+        S->>R: Report result<br/>skill_state: "finished"
+        deactivate S
+        R->>M: Receive result
+    end
+
+    %% === Subtask 3: take_out ===
+    rect rgb(232, 253, 235)
+        Note over M,SK: Subtask 3/3: take_out
+
+        M->>VM: Start monitor thread
+        activate VM
+        M->>R: publish roboos_to_gr2<br/>{"task": "take_out"}
+        R->>S: Receive subtask
+        activate S
+        S->>SK: MCP call_tool("take_bottle_out_of_box")
+        activate SK
+        SK-->>S: Return result (logging only)
+        deactivate SK
+
+        S->>R: Write vision_request:gr2<br/>{"skill_name": "take_out"}
+        R->>M: Polling detects request
+        M->>VM: judge_final_state("take_out")
+        VM-->>M: SceneState<br/>{bottle_in_box: false, confidence: 0.93}
+        Note over M: take_out → bottle_in_box==false → SUCCESS
+        M->>R: Write vision_result:gr2<br/>{"success": true}
+        R->>S: Polling reads result
+        Note over S: success → finished
+
+        S->>R: Report result<br/>skill_state: "finished"
+        deactivate S
+        R->>M: Receive result
+        M->>VM: Stop monitor
+        deactivate VM
+    end
+
+    Note over M: All subtasks complete<br/>task_state = waiting
+
+    M-->>U: Response: Task completed
+    deactivate M

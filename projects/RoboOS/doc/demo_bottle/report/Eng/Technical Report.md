@@ -107,14 +107,15 @@ GlobalTaskPlanner splits the traditional single LLM call into two stages:
 
 #### 3.1.3 GPT-4o Visual Monitoring (VisionMonitor)
 
-The Master launches a VisionMonitor thread during each subtask execution, using a top-view USB camera + GPT-4o vision capability for active monitoring:
+The Master launches a VisionMonitor thread during each subtask execution, using a top-view USB camera + OpenAI GPT-4o vision capability for active monitoring. The implementation uses the `openai` Python SDK, sending base64-encoded JPEG frames via `chat.completions.create()` API with `response_format={"type": "json_object"}` for forced JSON output.
 
 ```
 Subtask dispatched → Start monitor thread
                        │
-                       ├── Every 3 seconds: capture frame → base64 → GPT-4o judgment
-                       │   Returns: {"status": "executing|completed|failed",
-                       │             "reason": "...", "confidence": 0.85}
+                       ├── Every 5 seconds: CV2 capture frame → base64 JPEG → OpenAI GPT-4o judgment
+                       │   Returns: {"bottle_in_box": true/false,
+                       │             "bottle_on_paper": "yellow"/"green"/null,
+                       │             "reason": "...", "confidence": 0.92}
                        │
                        ├── confidence ≥ 0.7 → Log event to execution log
                        │
@@ -125,6 +126,7 @@ Subtask ends → Stop monitor → Final-state confirmation (last frame GPT-4o re
 - **Supplements rather than replaces** Slaver's skill_state reporting — cross-verification from two information sources
 - **Confidence threshold of 0.7** — low-confidence judgments do not trigger intervention, avoiding false positives
 - Automatic graceful degradation on API call failure — does not block normal execution
+- Supports custom `base_url` for OpenAI-compatible third-party API endpoints
 
 #### 3.1.4 Task State Machine
 
@@ -182,7 +184,10 @@ ready → running → finished (success)
 3. After 3 consecutive failures → sends `skill_state="stop"` + `failure_info` to Master
 4. Before termination, attempts `initialization()` to return to a safe position
 
-**Success/Failure Detection:** Checks whether the MCP return string contains the `"FAILED"` keyword (consistent with RoboSkill's `skill_failure()` convention).
+**Success/Failure Judgment:** The MCP return value is **used for logging only — it does not determine success or failure**. After skill execution completes, the Slaver requests Master's VisionMonitor (GPT-4o) to judge the scene state via the `vision_judge` callback:
+- `place_in` success condition: `bottle_in_box == true`
+- `take_out` success condition: `bottle_in_box == false`
+- When VisionMonitor is unavailable, gracefully degrades to assuming success to avoid vision service failures blocking task execution
 
 #### 3.2.3 ToolMatcher Semantic Tool Selection
 

@@ -1,0 +1,108 @@
+sequenceDiagram
+    title "放进去再拿出来" 端到端执行流程
+
+    participant U as 前端
+    participant M as Master
+    participant VM as VisionMonitor<br/>(OpenAI GPT-4o)
+    participant R as Redis
+    participant S as Slaver
+    participant SK as RoboSkill
+
+    U->>M: POST /publish_task<br/>{"task": "放进去再拿出来"}
+    activate M
+
+    Note over M: parse_bottle_demo_task()<br/>正则匹配 → [place_in, init, take_out]
+
+    Note over M: task_state = running
+
+    %% === Subtask 1: place_in ===
+    rect rgb(232, 245, 253)
+        Note over M,SK: 子任务 1/3: place_in
+
+        M->>VM: 启动监控线程
+        activate VM
+        M->>R: publish roboos_to_gr2<br/>{"task": "place_in"}
+        R->>S: 接收子任务
+        activate S
+
+        S->>SK: MCP call_tool("put_bottle_into_box")
+        activate SK
+
+        loop 每 5 秒
+            VM->>VM: CV2 抓帧 → base64 JPEG<br/>→ GPT-4o 场景判断
+            Note over VM: {"bottle_in_box": false,<br/>"confidence": 0.91, ...}
+        end
+
+        SK-->>S: 返回结果 (仅日志, 不判定成功)
+        deactivate SK
+
+        Note over S: 技能执行完毕, 请求视觉判定
+
+        S->>R: 写 vision_request:gr2<br/>{"skill_name": "place_in"}
+        R->>M: 轮询发现请求
+        M->>VM: judge_final_state("place_in")
+        VM->>VM: 抓帧 → GPT-4o 判断
+        VM-->>M: SceneState<br/>{bottle_in_box: true, confidence: 0.95}
+        Note over M: SKILL_SUCCESS_CRITERIA:<br/>place_in → bottle_in_box==true → 成功
+        M->>R: 写 vision_result:gr2<br/>{"success": true, "reason": "..."}
+        R->>S: 轮询读取结果
+        Note over S: success → skill_state = finished
+
+        S->>R: 上报结果<br/>skill_state: "finished"
+        deactivate S
+        R->>M: 收到结果
+
+        M->>VM: 停止监控
+        deactivate VM
+    end
+
+    %% === Subtask 2: initialization ===
+    rect rgb(255, 248, 230)
+        Note over M,SK: 子任务 2/3: initialization (机械臂归位)
+
+        M->>R: publish roboos_to_gr2<br/>{"task": "initialization"}
+        R->>S: 接收子任务
+        activate S
+        S->>SK: MCP call_tool("stop_task")
+        activate SK
+        SK-->>S: 机械臂已归位
+        deactivate SK
+        S->>R: 上报结果<br/>skill_state: "finished"
+        deactivate S
+        R->>M: 收到结果
+    end
+
+    %% === Subtask 3: take_out ===
+    rect rgb(232, 253, 235)
+        Note over M,SK: 子任务 3/3: take_out
+
+        M->>VM: 启动监控线程
+        activate VM
+        M->>R: publish roboos_to_gr2<br/>{"task": "take_out"}
+        R->>S: 接收子任务
+        activate S
+        S->>SK: MCP call_tool("take_bottle_out_of_box")
+        activate SK
+        SK-->>S: 返回结果 (仅日志)
+        deactivate SK
+
+        S->>R: 写 vision_request:gr2<br/>{"skill_name": "take_out"}
+        R->>M: 轮询发现请求
+        M->>VM: judge_final_state("take_out")
+        VM-->>M: SceneState<br/>{bottle_in_box: false, confidence: 0.93}
+        Note over M: take_out → bottle_in_box==false → 成功
+        M->>R: 写 vision_result:gr2<br/>{"success": true}
+        R->>S: 轮询读取结果
+        Note over S: success → finished
+
+        S->>R: 上报结果<br/>skill_state: "finished"
+        deactivate S
+        R->>M: 收到结果
+        M->>VM: 停止监控
+        deactivate VM
+    end
+
+    Note over M: 所有子任务完成<br/>task_state = waiting
+
+    M-->>U: 返回: 任务完成
+    deactivate M

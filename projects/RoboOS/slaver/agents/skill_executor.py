@@ -12,7 +12,7 @@ and implements the state machine defined in the task requirements (S-2.x):
 Design decisions:
   - No LLM involved: subtask text IS the MCP tool name (S-1.1)
   - Success/failure is NOT determined by skill return value — it is determined
-    by Master's VisionMonitor (Gemini + top-view camera scene judgment)
+    by Master's VisionMonitor (OpenAI GPT-4o + top-view camera scene judgment)
   - After each failure, initialization() is called before retry (task requirement)
   - Graceful degradation: if VisionMonitor is unavailable, assume success
 """
@@ -38,14 +38,26 @@ class SkillState(str, Enum):
 
 
 # Known bottle demo skill names (S-1.1: direct API mapping)
-BOTTLE_DEMO_SKILLS = {"place_in", "take_out", "initialization"}
+BOTTLE_DEMO_SKILLS = {
+    # Box scenario (skill.py)
+    "place_in", "take_out",
+    # Green-yellow scenario (skill_green_yellow.py)
+    "green_to_yellow", "yellow_to_green",
+    # Shared
+    "initialization",
+}
 
 # Map internal subtask names → actual MCP tool names on the skill server.
 # This allows the master/planner to keep using stable names while the
 # skill server can evolve its tool naming independently.
 SKILL_NAME_MAP: Dict[str, str] = {
+    # Box scenario
     "place_in": "put_bottle_into_box",
     "take_out": "take_bottle_out_of_box",
+    # Green-yellow scenario
+    "green_to_yellow": "move_bottle_green_to_yellow",
+    "yellow_to_green": "move_bottle_yellow_to_green",
+    # Shared: reset arm
     "initialization": "stop_task",
 }
 
